@@ -1,6 +1,6 @@
 import {
   APP_VERSION, SEMESTER, CLASSES, WEEKLY_TIMETABLE, FIXED_SUBJECTS,
-  TEXTBOOK_PRESETS, ACADEMIC_EVENTS
+  TEXTBOOK_PRESETS, ACADEMIC_EVENTS, NO_CLASS_DATES
 } from "./static-data.js";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
@@ -21,6 +21,7 @@ let recordSource = "local";
 let currentMonth = new Date();
 let calendarFilter = "ALL";
 let showAcademic = true;
+let showHiddenSlots = false;
 let editingId = null;
 
 function toast(msg){
@@ -29,21 +30,27 @@ function toast(msg){
   setTimeout(()=>$("toast").classList.remove("show"),1800);
 }
 
+function isNoClassDate(date){
+  return NO_CLASS_DATES.includes(date);
+}
 function scheduledSlots(date){
-  if(!inSemester(date)) return [];
+  if(!inSemester(date) || isNoClassDate(date)) return [];
   return WEEKLY_TIMETABLE[parseLocalDate(date).getDay()] || [];
 }
 function fixedSlots(date){
-  if(!inSemester(date)) return [];
+  if(!inSemester(date) || isNoClassDate(date)) return [];
   return FIXED_SUBJECTS[parseLocalDate(date).getDay()] || [];
 }
 function eventsOn(date){ return ACADEMIC_EVENTS.filter(e=>e.date===date); }
 function recordsOn(date){ return records.filter(r=>r.date===date).sort((a,b)=>Number(a.period)-Number(b.period)); }
+function hiddenSlotRecord(date, cls, period){
+  return records.find(r=>r.date===date && r.className===cls && String(r.period)===String(period) && r.status==="schedule_hidden");
+}
 function existingScheduledRecord(date, cls, period){
   return records.some(r=>r.date===date && r.className===cls && String(r.period)===String(period));
 }
 function sortedClassRecords(cls){
-  return records.filter(r=>r.className===cls && r.status!=="cancelled")
+  return records.filter(r=>r.className===cls && r.status!=="cancelled" && r.status!=="schedule_hidden")
     .sort((a,b)=>a.date.localeCompare(b.date)||Number(a.period)-Number(b.period));
 }
 function latestClassRecord(cls, beforeDate=null){
@@ -52,7 +59,7 @@ function latestClassRecord(cls, beforeDate=null){
   return arr[arr.length-1] || null;
 }
 function latestOtherRecord(cls, beforeDate=null){
-  let arr = records.filter(r=>r.className===cls && r.status!=="cancelled");
+  let arr = records.filter(r=>r.className===cls && r.status!=="cancelled" && r.status!=="schedule_hidden");
   if(beforeDate) arr=arr.filter(r=>r.date<=beforeDate);
   arr.sort((a,b)=>a.date.localeCompare(b.date)||Number(a.period)-Number(b.period));
   return arr[arr.length-1]||null;
@@ -105,8 +112,8 @@ function renderToday(){
 
   const evHtml = evs.length ? evs.map(e=>`<div class="event-line">${esc(e.title)}</div>`).join("") : `<div class="small muted">학교 일정 없음</div>`;
 
-  const totalToday = recordsOn(date).filter(r=>r.status!=="cancelled").length;
-  const doneClasses = new Set(recordsOn(date).filter(r=>r.status!=="cancelled").map(r=>r.className)).size;
+  const totalToday = recordsOn(date).filter(r=>r.status!=="cancelled" && r.status!=="schedule_hidden").length;
+  const doneClasses = new Set(recordsOn(date).filter(r=>r.status!=="cancelled" && r.status!=="schedule_hidden").map(r=>r.className)).size;
   const mini = CLASSES.map(c=>{
     const r=latestClassRecord(c);
     return `<div class="mini-row"><b>${c}반</b> ${r?esc(r.title||r.type):"기록 없음"}<div class="subline">${r?.nextStart?`다음: ${esc(r.nextStart)}`:""}</div></div>`;
@@ -148,7 +155,8 @@ function renderCalendar(){
     else if(i>=first+last){day=i-first-last+1;mm=m+1;muted=true;if(mm>11){mm=0;yy++;}}
     else day=i-first+1;
     const date=`${yy}-${pad(mm+1)}-${pad(day)}`;
-    const cell=document.createElement("div"); cell.className=`day${muted?" muted":""}`;
+    const cell=document.createElement("div");
+    cell.className=`day${muted?" muted":""}${isNoClassDate(date)?" holiday-day":""}`;
     cell.innerHTML=`<div class="date">${day}</div>`;
 
     if(showAcademic) eventsOn(date).forEach(e=>cell.insertAdjacentHTML("beforeend",`<div class="academic">${esc(e.title)}</div>`));
@@ -158,21 +166,82 @@ function renderCalendar(){
       .sort((a,b)=>a.period-b.period).forEach(s=>{
         if(existingScheduledRecord(date,s.className,s.period)) return;
         const el=document.createElement("div"); el.className=`slot ${s.className}`;
-        el.textContent=`＋ ${s.className}반 ${s.period}교시`;
-        el.onclick=()=>openRecord({date,className:s.className,period:s.period});
+        const main=document.createElement("div"); main.className="slot-main";
+        main.textContent=`＋ ${s.className}반 ${s.period}교시`;
+        main.title="눌러서 실제 수업 기록";
+        main.onclick=()=>openRecord({date,className:s.className,period:s.period});
+
+        const hide=document.createElement("button"); hide.className="slot-hide";
+        hide.type="button"; hide.textContent="×"; hide.title="이 날 예정 수업 숨기기";
+        hide.onclick=async (e)=>{
+          e.stopPropagation();
+          await hideScheduledSlot(date,s.className,s.period);
+        };
+        el.append(main,hide);
         cell.appendChild(el);
       });
 
-    recordsOn(date).filter(r=>calendarFilter==="ALL"||r.className===calendarFilter).forEach(r=>{
-      const el=document.createElement("div");
-      el.className=`record ${r.className}${r.status==="cancelled"?" cancelled":""}`;
-      el.innerHTML=`<strong>${r.className}반 ${r.period}교시 · ${r.status==="cancelled"?"미진행":esc(r.type)}</strong>
-        ${r.status==="cancelled"?esc(r.memo||""):esc(r.title||"")}
-        ${r.status!=="cancelled"&&r.nextStart?`<div class="next">다음: ${esc(r.nextStart)}</div>`:""}`;
-      el.onclick=()=>editRecord(r.id);
-      cell.appendChild(el);
-    });
+    // 수동으로 숨긴 시간표는 기본적으로 보이지 않으며, '숨긴 수업'을 켜면 복원 버튼과 함께 표시
+    if(showHiddenSlots){
+      recordsOn(date)
+        .filter(r=>r.status==="schedule_hidden")
+        .filter(r=>calendarFilter==="ALL"||r.className===calendarFilter)
+        .forEach(r=>{
+          const el=document.createElement("div"); el.className="hidden-slot";
+          el.innerHTML=`<span>${r.className}반 ${r.period}교시 · 숨김</span>`;
+          const restore=document.createElement("button"); restore.type="button"; restore.textContent="복원";
+          restore.onclick=async()=>{ await restoreScheduledSlot(r.id); };
+          el.appendChild(restore);
+          cell.appendChild(el);
+        });
+    }
+
+    recordsOn(date)
+      .filter(r=>r.status!=="schedule_hidden")
+      .filter(r=>calendarFilter==="ALL"||r.className===calendarFilter)
+      .forEach(r=>{
+        const el=document.createElement("div");
+        el.className=`record ${r.className}${r.status==="cancelled"?" cancelled":""}`;
+        el.innerHTML=`<strong>${r.className}반 ${r.period}교시 · ${r.status==="cancelled"?"미진행":esc(r.type)}</strong>
+          ${r.status==="cancelled"?esc(r.memo||""):esc(r.title||"")}
+          ${r.status!=="cancelled"&&r.nextStart?`<div class="next">다음: ${esc(r.nextStart)}</div>`:""}`;
+        el.onclick=()=>editRecord(r.id);
+        cell.appendChild(el);
+      });
     cal.appendChild(cell);
+  }
+}
+
+async function hideScheduledSlot(date, className, period){
+  if(!confirm(`${date} ${className}반 ${period}교시 예정 수업을 달력에서 숨길까요?\n\n시험·행사·특별 일정 등으로 실제 수업이 없는 날에 사용하면 됩니다.`)) return;
+  const rec={
+    id:`hidden-${date}-${className}-${period}`,
+    date, className, period:Number(period),
+    status:"schedule_hidden",
+    type:"시간표 제외",
+    session:"",
+    title:"",
+    pages:"",
+    worksheet:"",
+    detail:"",
+    nextStart:"",
+    memo:"수동으로 예정 수업 숨김",
+    updatedAt:new Date().toISOString()
+  };
+  try{
+    await upsertRecord(rec);
+    toast("예정 수업을 숨겼습니다.");
+  }catch(err){
+    alert("숨김 처리 실패: "+err.message);
+  }
+}
+
+async function restoreScheduledSlot(id){
+  try{
+    await deleteRecordById(id);
+    toast("예정 수업을 복원했습니다.");
+  }catch(err){
+    alert("복원 실패: "+err.message);
   }
 }
 
@@ -200,7 +269,9 @@ function renderHistory(){
   const q=$("searchText").value.trim().toLowerCase();
   const c=$("historyClass").value.replace("반","");
   const t=$("historyType").value;
-  const rows=[...records].sort((a,b)=>b.date.localeCompare(a.date)||Number(b.period)-Number(a.period))
+  const rows=[...records]
+    .filter(r=>r.status!=="schedule_hidden")
+    .sort((a,b)=>b.date.localeCompare(a.date)||Number(b.period)-Number(a.period))
     .filter(r=>(c==="ALL"||r.className===c)&&(t==="ALL"||r.type===t))
     .filter(r=>!q || [r.title,r.detail,r.memo,r.worksheet,r.pages,r.nextStart].some(v=>String(v||"").toLowerCase().includes(q)));
 
@@ -293,6 +364,7 @@ function bind(){
   $("goToday").onclick=()=>{currentMonth=new Date();renderCalendar();};
   document.querySelectorAll("#classFilters .chip").forEach(b=>b.onclick=()=>{document.querySelectorAll("#classFilters .chip").forEach(x=>x.classList.remove("active"));b.classList.add("active");calendarFilter=b.dataset.class;renderCalendar();});
   $("showEvents").onchange=e=>{showAcademic=e.target.checked;renderCalendar();};
+  $("showHiddenSlots").onchange=e=>{showHiddenSlots=e.target.checked;renderCalendar();};
   $("newRecordFab").onclick=()=>openRecord({});
   $("closeDialog").onclick=()=>$("recordDialog").close();$("cancelBtn").onclick=()=>$("recordDialog").close();
   $("recordForm").onsubmit=saveForm;$("deleteBtn").onclick=deleteEditing;
