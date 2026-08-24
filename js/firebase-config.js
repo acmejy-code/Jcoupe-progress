@@ -4,12 +4,12 @@
 // 실제 데이터 보호는 firestore.rules가 담당하므로 반드시 규칙도 적용하세요.
 
 export const firebaseConfig = {
-  apiKey: "PASTE_YOUR_API_KEY",
-  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
-  projectId: "PASTE_YOUR_PROJECT_ID",
-  storageBucket: "PASTE_YOUR_PROJECT.firebasestorage.app",
-  messagingSenderId: "PASTE_YOUR_SENDER_ID",
-  appId: "PASTE_YOUR_APP_ID"
+  apiKey: "AIzaSyDaFR4L91m5NlWpD33lkn6l9VYPJppAaCg",
+  authDomain: "doktogul-progress.firebaseapp.com",
+  projectId: "doktogul-progress",
+  storageBucket: "doktogul-progress.firebasestorage.app",
+  messagingSenderId: "95481188113",
+  appId: "1:95481188113:web:62c212c71c1b963da0c6b0"
 };
 
 export function isFirebaseConfigured() {
