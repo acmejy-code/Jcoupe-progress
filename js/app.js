@@ -2,7 +2,8 @@ import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalize
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
-  setActiveProject, getActiveProjectId, getProjects, saveProject, archiveProject
+  setActiveProject, getActiveProjectId, getProjects, saveProject, archiveProject,
+  publishStudentPortalData, studentPortalUrl
 } from "./db.js";
 
 const $=id=>document.getElementById(id);
@@ -310,11 +311,32 @@ function copyRecordFields(src){
 async function saveForm(e){
   e.preventDefault();
   const rec={id:editingId||makeId(),projectId:activeProject.id,date:$("date").value,className:$("className").value,period:Number($("period").value),status:$("status").value,type:$("type").value,session:$("session").value.trim(),title:$("lessonTitle").value.trim(),pages:$("pages").value.trim(),worksheet:$("worksheet").value.trim(),detail:$("detail").value.trim(),nextStart:$("nextStart").value.trim(),memo:$("memo").value.trim(),studentVisible:$("studentVisible").checked,updatedAt:new Date().toISOString()};
-  try{await upsertRecord(rec);$("recordDialog").close();toast("저장했습니다.");}catch(err){alert("저장 실패: "+err.message);}
+  try{
+    await upsertRecord(rec);
+    $("recordDialog").close();
+    if(storageMode()==="cloud"){
+      try{
+        const result=await publishStudentPortalData(activeProject.id);
+        toast(`저장 + 학생 포털 자동 반영 (${result.publishedRecordCount}건)`);
+      }catch(pubErr){
+        console.warn(pubErr);
+        toast("수업은 저장됨 · 학생 포털 발행은 재시도 필요");
+      }
+    }else{
+      toast("저장했습니다. 로그인 후 학생 포털에 발행할 수 있습니다.");
+    }
+  }catch(err){alert("저장 실패: "+err.message);}
 }
 async function deleteEditing(){
   if(!editingId||!confirm("이 수업 기록을 삭제할까요?"))return;
-  try{await deleteRecordById(editingId);$("recordDialog").close();toast("삭제했습니다.");}catch(err){alert("삭제 실패: "+err.message);}
+  try{
+    await deleteRecordById(editingId);
+    $("recordDialog").close();
+    if(storageMode()==="cloud"){
+      try{await publishStudentPortalData(activeProject.id);toast("삭제 + 학생 포털 반영 완료");}
+      catch(pubErr){console.warn(pubErr);toast("삭제 완료 · 학생 포털 발행은 재시도 필요");}
+    }else toast("삭제했습니다.");
+  }catch(err){alert("삭제 실패: "+err.message);}
 }
 
 function updateAuthUi(state){
@@ -409,6 +431,28 @@ async function saveProjectForm(e){
     if(!editingProjectId) await switchProject(p.id);
   }catch(err){alert("프로젝트 저장 실패: "+err.message);}
 }
+
+async function publishPortalNow(){
+  if(storageMode()!=="cloud"){
+    alert("학생 포털 발행은 Google 로그인 상태에서 사용할 수 있습니다.");
+    return;
+  }
+  if(!confirm(`현재 '${activeProject.adminLabel}'의 학생 공개 대상 진도를 포털에 반영할까요?\n\n교사용 메모는 공개되지 않습니다.`)) return;
+  const btn=$("publishPortalBtn");
+  if(btn){btn.disabled=true;btn.textContent="발행 중...";}
+  try{
+    const result=await publishStudentPortalData(activeProject.id);
+    toast(`학생 포털 발행 완료 · ${result.publishedRecordCount}건`);
+  }catch(err){
+    alert("학생 포털 발행 실패: "+err.message+"\n\nFirebase 규칙이 v2.1용으로 적용되었는지 확인해 주세요.");
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent="학생 포털 지금 발행";}
+  }
+}
+function openStudentPortal(){
+  window.open(studentPortalUrl(activeProject.id),"_blank","noopener");
+}
+
 function renderProjects(){
   if(!activeProject)return;
   const cards=projects.map(p=>`
@@ -429,10 +473,24 @@ function renderProjects(){
 
   $("view-projects").innerHTML=`
     <div class="project-head"><div><h2>수업 프로젝트</h2><div class="small muted">학년도·학기·학년·과목별로 수업 데이터를 분리해 누적합니다.</div></div><button class="btn primary" id="newProjectBtn">＋ 새 프로젝트</button></div>
-    <div class="card project-summary"><strong>${esc(activeProject.adminLabel)}</strong><div class="small muted">현재 진도 기록은 이 프로젝트에 저장됩니다. 학생용 포털 제목: ${esc(activeProject.portalTitle)}</div></div>
+    <div class="card project-summary">
+      <div class="project-summary-row">
+        <div>
+          <strong>${esc(activeProject.adminLabel)}</strong>
+          <div class="small muted">현재 진도 기록은 이 프로젝트에 저장됩니다. 학생용 포털 제목: ${esc(activeProject.portalTitle)}</div>
+          <div class="small muted" style="margin-top:4px">수업 기록 저장 시 학생 공개 대상 진도가 자동으로 포털에 반영됩니다.</div>
+        </div>
+        <div class="project-publish-actions">
+          <button class="btn primary" id="publishPortalBtn">학생 포털 지금 발행</button>
+          <button class="btn" id="openPortalBtn">학생 포털 열기</button>
+        </div>
+      </div>
+    </div>
     <div class="project-grid">${cards}</div>`;
 
   $("newProjectBtn").onclick=()=>openProjectDialog();
+  $("publishPortalBtn").onclick=publishPortalNow;
+  $("openPortalBtn").onclick=openStudentPortal;
   document.querySelectorAll("[data-project-use]").forEach(b=>b.onclick=()=>switchProject(b.dataset.projectUse));
   document.querySelectorAll("[data-project-edit]").forEach(b=>b.onclick=()=>openProjectDialog(projects.find(p=>p.id===b.dataset.projectEdit)));
   document.querySelectorAll("[data-project-copy]").forEach(b=>b.onclick=()=>openProjectDialog(projects.find(p=>p.id===b.dataset.projectCopy),{duplicate:true}));

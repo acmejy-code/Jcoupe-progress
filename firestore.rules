@@ -3,19 +3,30 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // 제이쿱 관리자 데이터:
-    // 로그인한 사용자는 자신의 users/{uid} 아래 데이터만 읽고 쓸 수 있습니다.
+    // 관리자 원본 데이터: 로그인한 사용자는 자신의 데이터만 읽고 쓸 수 있습니다.
     match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null
                          && request.auth.uid == userId;
     }
 
-    // 2단계 학생용 포털의 공개 데이터 공간.
-    // 현재 v2.0에서는 아직 쓰지 않으며, 학생 포털 연결 단계에서
-    // 공개용 필드만 별도 문서로 발행하고 아래 규칙을 구체화합니다.
-    match /publicCourses/{document=**} {
-      allow read: if false;
-      allow write: if false;
+    // 학생용 공개 수업 데이터.
+    // 누구나 읽을 수 있지만, 최초 생성자는 로그인 사용자 본인(ownerUid)이어야 합니다.
+    // 이후 수정/삭제는 해당 ownerUid 사용자만 가능합니다.
+    match /publicCourses/{courseId} {
+      allow read: if true;
+      allow create: if request.auth != null
+                    && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if request.auth != null
+                    && resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.ownerUid == resource.data.ownerUid;
+      allow delete: if request.auth != null
+                    && resource.data.ownerUid == request.auth.uid;
+
+      match /classes/{classId} {
+        allow read: if true;
+        allow create, update, delete: if request.auth != null
+          && getAfter(/databases/$(database)/documents/publicCourses/$(courseId)).data.ownerUid == request.auth.uid;
+      }
     }
   }
 }

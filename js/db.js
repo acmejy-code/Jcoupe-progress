@@ -319,6 +319,90 @@ export async function saveProject(project){
   return p;
 }
 
+
+
+function publicRecord(record){
+  return {
+    date: String(record.date || ""),
+    period: Number(record.period || 0),
+    type: String(record.type || ""),
+    session: String(record.session || ""),
+    title: String(record.title || ""),
+    detail: String(record.detail || ""),
+    nextStart: String(record.nextStart || ""),
+    updatedAt: String(record.updatedAt || "")
+  };
+}
+
+function compareRecords(a,b){
+  return String(a.date||"").localeCompare(String(b.date||""))
+    || Number(a.period||0)-Number(b.period||0);
+}
+
+export async function publishStudentPortalData(projectId=activeProjectId){
+  if(storageMode()!=="cloud" || !currentUser || !firebase || !db){
+    throw new Error("학생 포털 발행은 Google 로그인 후 사용할 수 있습니다.");
+  }
+
+  const project=currentProjects.find(p=>String(p.id)===String(projectId));
+  if(!project) throw new Error("발행할 수업 프로젝트를 찾을 수 없습니다.");
+
+  const recordSnap=await firebase.fsMod.getDocs(
+    firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",projectId,"lessonRecords")
+  );
+  const sourceRows=recordSnap.docs.map(d=>({id:d.id,...d.data()}));
+  const visibleRows=sourceRows
+    .filter(r=>r.status!=="cancelled" && r.status!=="schedule_hidden" && r.studentVisible!==false)
+    .sort(compareRecords);
+
+  const publicRef=firebase.fsMod.doc(db,"publicCourses",projectId);
+  const classesRef=firebase.fsMod.collection(db,"publicCourses",projectId,"classes");
+  const existingClassSnap=await firebase.fsMod.getDocs(classesRef);
+
+  const batch=firebase.fsMod.writeBatch(db);
+  batch.set(publicRef,{
+    ownerUid: currentUser.uid,
+    projectId: project.id,
+    academicYear: Number(project.academicYear||0),
+    semester: String(project.semester||""),
+    grade: Number(project.grade||0),
+    subjectName: String(project.subjectName||""),
+    shortName: String(project.shortName||project.subjectName||""),
+    portalTitle: String(project.portalTitle||`${project.shortName||project.subjectName} 수업 종합 포털`),
+    portalSubtitle: String(project.portalSubtitle||`${project.academicYear}학년도 ${project.grade}학년 · ${project.subjectName}`),
+    classes: Array.isArray(project.classes)?project.classes.map(String):[],
+    publishedRecordCount: visibleRows.length,
+    updatedAt: firebase.fsMod.serverTimestamp()
+  },{merge:true});
+
+  // 현재 공개 반 문서를 먼저 정리하여, 공개 해제된 기록/삭제된 반의 잔존 데이터를 제거합니다.
+  existingClassSnap.docs.forEach(d=>batch.delete(d.ref));
+
+  for(const className of (project.classes||[])){
+    const classRows=visibleRows.filter(r=>String(r.className)===String(className));
+    if(!classRows.length) continue;
+    const current=publicRecord(classRows[classRows.length-1]);
+    const recent=classRows.slice(-10).reverse().map(publicRecord);
+    batch.set(firebase.fsMod.doc(db,"publicCourses",projectId,"classes",String(className)),{
+      className: String(className),
+      current,
+      recent,
+      updatedAt: firebase.fsMod.serverTimestamp()
+    });
+  }
+
+  await batch.commit();
+  return {
+    projectId,
+    publishedRecordCount: visibleRows.length,
+    classCount: (project.classes||[]).filter(c=>visibleRows.some(r=>String(r.className)===String(c))).length
+  };
+}
+
+export function studentPortalUrl(projectId=activeProjectId){
+  return `https://acmejy-code.github.io/Jcoupe-class-portal/?project=${encodeURIComponent(projectId)}`;
+}
+
 export async function archiveProject(projectId){
   const p=currentProjects.find(x=>x.id===projectId);
   if(!p) return;
