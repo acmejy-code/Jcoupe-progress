@@ -2,10 +2,20 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 같은 Google 계정으로 로그인한 본인의 기록만 읽고 쓸 수 있음
+
+    // 제이쿱 관리자 데이터:
+    // 로그인한 사용자는 자신의 users/{uid} 아래 데이터만 읽고 쓸 수 있습니다.
     match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null
                          && request.auth.uid == userId;
+    }
+
+    // 2단계 학생용 포털의 공개 데이터 공간.
+    // 현재 v2.0에서는 아직 쓰지 않으며, 학생 포털 연결 단계에서
+    // 공개용 필드만 별도 문서로 발행하고 아래 규칙을 구체화합니다.
+    match /publicCourses/{document=**} {
+      allow read: if false;
+      allow write: if false;
     }
   }
 }
