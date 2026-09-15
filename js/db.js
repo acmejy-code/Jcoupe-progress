@@ -10,13 +10,16 @@ let auth = null;
 let db = null;
 let currentUser = null;
 let unsubscribeRecords = null;
+let unsubscribeMaterials = null;
 let onRecordsCb = null;
+let onMaterialsCb = null;
 let onProjectsCb = null;
 let onAuthCb = null;
 let activeProjectId = localStorage.getItem(ACTIVE_PROJECT_KEY) || DEFAULT_PROJECT_ID;
 let currentProjects = [];
 
 const recordsLocalKey = projectId => `jcoop_course_records_v2_${projectId}`;
+const materialsLocalKey = projectId => `jcoop_course_materials_v1_${projectId}`;
 
 export function storageMode(){
   if(!isFirebaseConfigured()) return "local";
@@ -69,7 +72,11 @@ function migrateLegacyLocalIfNeeded(){
 export function getLocalRecords(projectId=activeProjectId){
   return readJson(recordsLocalKey(projectId), []);
 }
+export function getLocalMaterials(projectId=activeProjectId){
+  return readJson(materialsLocalKey(projectId), []);
+}
 function saveLocalRecords(projectId, rows){ writeJson(recordsLocalKey(projectId), rows); }
+function saveLocalMaterials(projectId, rows){ writeJson(materialsLocalKey(projectId), rows); }
 
 function emitLocalProjects(){
   currentProjects = ensureLocalSeedProjects();
@@ -78,14 +85,15 @@ function emitLocalProjects(){
 function emitLocalRecords(){
   onRecordsCb?.(getLocalRecords(activeProjectId), "local", activeProjectId);
 }
+function emitLocalMaterials(){
+  onMaterialsCb?.(getLocalMaterials(activeProjectId), "local", activeProjectId);
+}
 
 async function ensureCloudSeedProjects(){
   for(const seed of SEED_PROJECTS){
     const ref = firebase.fsMod.doc(db, "users", currentUser.uid, "courseProjects", seed.id);
     const snap = await firebase.fsMod.getDoc(ref);
-    if(!snap.exists()){
-      await firebase.fsMod.setDoc(ref, normalizeProject(seed), {merge:true});
-    }
+    if(!snap.exists()) await firebase.fsMod.setDoc(ref, normalizeProject(seed), {merge:true});
   }
 }
 
@@ -109,12 +117,10 @@ async function migrateLegacyCloudIfNeeded(){
     firebase.fsMod.collection(db, "users", currentUser.uid, "courseProjects", DEFAULT_PROJECT_ID, "lessonRecords")
   );
   if(!target.empty) return 0;
-
   const legacy = await firebase.fsMod.getDocs(
     firebase.fsMod.collection(db, "users", currentUser.uid, "lessonRecords")
   );
   if(legacy.empty) return 0;
-
   let migrated = 0;
   for(const d of legacy.docs){
     const data = {...d.data(), id:d.id, projectId:DEFAULT_PROJECT_ID};
@@ -129,11 +135,12 @@ async function migrateLegacyCloudIfNeeded(){
 }
 
 function stopRecordListener(){
-  if(unsubscribeRecords){
-    unsubscribeRecords();
-    unsubscribeRecords = null;
-  }
+  if(unsubscribeRecords){ unsubscribeRecords(); unsubscribeRecords = null; }
 }
+function stopMaterialListener(){
+  if(unsubscribeMaterials){ unsubscribeMaterials(); unsubscribeMaterials = null; }
+}
+function stopProjectListeners(){ stopRecordListener(); stopMaterialListener(); }
 
 function startCloudRecordListener(){
   stopRecordListener();
@@ -148,14 +155,39 @@ function startCloudRecordListener(){
       onRecordsCb?.(rows, "cloud", activeProjectId);
     },
     err=>{
-      console.error("Firestore snapshot error:", err);
+      console.error("Firestore record snapshot error:", err);
       onAuthCb?.({configured:true,user:currentUser,mode:"cloud",error:err.message});
     }
   );
 }
 
-export async function initDataLayer({onRecords,onProjects,onAuth}){
+function startCloudMaterialListener(){
+  stopMaterialListener();
+  const q = firebase.fsMod.query(
+    firebase.fsMod.collection(db, "users", currentUser.uid, "courseProjects", activeProjectId, "materials"),
+    firebase.fsMod.orderBy("updatedAt", "desc")
+  );
+  unsubscribeMaterials = firebase.fsMod.onSnapshot(
+    q,
+    snap=>{
+      const rows=snap.docs.map(d=>({id:d.id, ...d.data(), projectId:activeProjectId}));
+      onMaterialsCb?.(rows, "cloud", activeProjectId);
+    },
+    err=>{
+      console.error("Firestore material snapshot error:", err);
+      onAuthCb?.({configured:true,user:currentUser,mode:"cloud",error:err.message});
+    }
+  );
+}
+
+function startCloudProjectListeners(){
+  startCloudRecordListener();
+  startCloudMaterialListener();
+}
+
+export async function initDataLayer({onRecords,onMaterials,onProjects,onAuth}){
   onRecordsCb=onRecords;
+  onMaterialsCb=onMaterials;
   onProjectsCb=onProjects;
   onAuthCb=onAuth;
 
@@ -163,6 +195,7 @@ export async function initDataLayer({onRecords,onProjects,onAuth}){
   const legacyLocalCount=migrateLegacyLocalIfNeeded();
   emitLocalProjects();
   emitLocalRecords();
+  emitLocalMaterials();
   if(legacyLocalCount) onAuthCb?.({configured:isFirebaseConfigured(),user:null,mode:"local",legacyLocalMigrated:legacyLocalCount});
 
   if(!isFirebaseConfigured()){
@@ -183,11 +216,12 @@ export async function initDataLayer({onRecords,onProjects,onAuth}){
 
     authMod.onAuthStateChanged(auth, async user=>{
       currentUser=user||null;
-      stopRecordListener();
+      stopProjectListeners();
 
       if(!user){
         emitLocalProjects();
         emitLocalRecords();
+        emitLocalMaterials();
         onAuthCb?.({configured:true,user:null,mode:"local"});
         return;
       }
@@ -196,7 +230,7 @@ export async function initDataLayer({onRecords,onProjects,onAuth}){
         await ensureCloudSeedProjects();
         await loadCloudProjects();
         const migrated=await migrateLegacyCloudIfNeeded();
-        startCloudRecordListener();
+        startCloudProjectListeners();
         onAuthCb?.({configured:true,user,mode:"cloud",legacyCloudMigrated:migrated});
       }catch(err){
         console.error(err);
@@ -212,11 +246,8 @@ export async function initDataLayer({onRecords,onProjects,onAuth}){
 export async function setActiveProject(projectId){
   activeProjectId=String(projectId||DEFAULT_PROJECT_ID);
   localStorage.setItem(ACTIVE_PROJECT_KEY,activeProjectId);
-  if(storageMode()==="cloud"){
-    startCloudRecordListener();
-  }else{
-    emitLocalRecords();
-  }
+  if(storageMode()==="cloud") startCloudProjectListeners();
+  else { emitLocalRecords(); emitLocalMaterials(); }
 }
 
 export async function signInGoogle(){
@@ -234,6 +265,23 @@ function normalizeRecord(record){
   const copy={...record};
   delete copy._source;
   copy.projectId=String(copy.projectId||activeProjectId);
+  return copy;
+}
+function normalizeMaterial(material){
+  const copy={...material};
+  delete copy._source;
+  copy.projectId=String(copy.projectId||activeProjectId);
+  copy.title=String(copy.title||"").trim();
+  copy.description=String(copy.description||"").trim();
+  copy.category=String(copy.category||"수업자료");
+  copy.fileType=String(copy.fileType||"기타");
+  copy.driveUrl=String(copy.driveUrl||"").trim();
+  copy.fileId=String(copy.fileId||"").trim();
+  copy.previewUrl=String(copy.previewUrl||"").trim();
+  copy.downloadUrl=String(copy.downloadUrl||"").trim();
+  copy.targetClasses=Array.isArray(copy.targetClasses)?copy.targetClasses.map(String):["ALL"];
+  if(copy.targetClasses.length===0) copy.targetClasses=["ALL"];
+  copy.isPublished=copy.isPublished!==false;
   return copy;
 }
 
@@ -298,6 +346,70 @@ export async function migrateLocalToCloud(){
   return rows.length;
 }
 
+export async function upsertMaterial(material){
+  const clean=normalizeMaterial(material);
+  if(!clean.id) throw new Error("자료 ID가 없습니다.");
+  if(storageMode()==="cloud"){
+    await firebase.fsMod.setDoc(
+      firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"materials",String(clean.id)),
+      clean,{merge:true}
+    );
+    return clean;
+  }
+  const rows=getLocalMaterials(activeProjectId);
+  const idx=rows.findIndex(r=>String(r.id)===String(clean.id));
+  if(idx>=0) rows[idx]=clean; else rows.unshift(clean);
+  rows.sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+  saveLocalMaterials(activeProjectId,rows);
+  onMaterialsCb?.(rows,"local",activeProjectId);
+  return clean;
+}
+
+export async function deleteMaterialById(id){
+  if(storageMode()==="cloud"){
+    await firebase.fsMod.deleteDoc(
+      firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"materials",String(id))
+    );
+    return;
+  }
+  const rows=getLocalMaterials(activeProjectId).filter(r=>String(r.id)!==String(id));
+  saveLocalMaterials(activeProjectId,rows);
+  onMaterialsCb?.(rows,"local",activeProjectId);
+}
+
+export async function replaceAllMaterials(imported){
+  if(!Array.isArray(imported)) throw new Error("올바른 자료 배열이 아닙니다.");
+  const rows=imported.map(r=>normalizeMaterial({...r,projectId:activeProjectId}));
+  if(storageMode()==="cloud"){
+    const existing=await firebase.fsMod.getDocs(
+      firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",activeProjectId,"materials")
+    );
+    const batch=firebase.fsMod.writeBatch(db);
+    existing.docs.forEach(d=>batch.delete(d.ref));
+    rows.forEach(r=>{
+      const id=String(r.id||crypto.randomUUID());
+      batch.set(firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"materials",id),{...r,id});
+    });
+    await batch.commit();
+  }else{
+    saveLocalMaterials(activeProjectId,rows);
+    onMaterialsCb?.(rows,"local",activeProjectId);
+  }
+}
+
+export async function migrateLocalMaterialsToCloud(){
+  if(storageMode()!=="cloud") throw new Error("먼저 Google 로그인을 해 주세요.");
+  const rows=getLocalMaterials(activeProjectId);
+  for(const row of rows){
+    const clean=normalizeMaterial(row);
+    await firebase.fsMod.setDoc(
+      firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"materials",String(clean.id)),
+      clean,{merge:true}
+    );
+  }
+  return rows.length;
+}
+
 export async function saveProject(project){
   const p=normalizeProject(project);
   if(!p.id) throw new Error("프로젝트 ID가 없습니다.");
@@ -319,8 +431,6 @@ export async function saveProject(project){
   return p;
 }
 
-
-
 function publicRecord(record){
   return {
     date: String(record.date || ""),
@@ -333,31 +443,52 @@ function publicRecord(record){
     updatedAt: String(record.updatedAt || "")
   };
 }
-
+function publicMaterial(material){
+  return {
+    title: String(material.title||""),
+    description: String(material.description||""),
+    category: String(material.category||"수업자료"),
+    fileType: String(material.fileType||"기타"),
+    driveUrl: String(material.driveUrl||""),
+    fileId: String(material.fileId||""),
+    previewUrl: String(material.previewUrl||""),
+    downloadUrl: String(material.downloadUrl||""),
+    targetClasses: Array.isArray(material.targetClasses)?material.targetClasses.map(String):["ALL"],
+    createdAt: String(material.createdAt||""),
+    updatedAt: String(material.updatedAt||"")
+  };
+}
 function compareRecords(a,b){
-  return String(a.date||"").localeCompare(String(b.date||""))
-    || Number(a.period||0)-Number(b.period||0);
+  return String(a.date||"").localeCompare(String(b.date||"")) || Number(a.period||0)-Number(b.period||0);
 }
 
 export async function publishStudentPortalData(projectId=activeProjectId){
   if(storageMode()!=="cloud" || !currentUser || !firebase || !db){
     throw new Error("학생 포털 발행은 Google 로그인 후 사용할 수 있습니다.");
   }
-
   const project=currentProjects.find(p=>String(p.id)===String(projectId));
   if(!project) throw new Error("발행할 수업 프로젝트를 찾을 수 없습니다.");
 
-  const recordSnap=await firebase.fsMod.getDocs(
-    firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",projectId,"lessonRecords")
-  );
+  const [recordSnap,materialSnap]=await Promise.all([
+    firebase.fsMod.getDocs(firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",projectId,"lessonRecords")),
+    firebase.fsMod.getDocs(firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",projectId,"materials"))
+  ]);
   const sourceRows=recordSnap.docs.map(d=>({id:d.id,...d.data()}));
   const visibleRows=sourceRows
     .filter(r=>r.status!=="cancelled" && r.status!=="schedule_hidden" && r.studentVisible!==false)
     .sort(compareRecords);
+  const visibleMaterials=materialSnap.docs
+    .map(d=>({id:d.id,...d.data()}))
+    .filter(m=>m.isPublished!==false && String(m.title||"").trim() && String(m.fileId||"").trim())
+    .sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
 
   const publicRef=firebase.fsMod.doc(db,"publicCourses",projectId);
   const classesRef=firebase.fsMod.collection(db,"publicCourses",projectId,"classes");
-  const existingClassSnap=await firebase.fsMod.getDocs(classesRef);
+  const materialsRef=firebase.fsMod.collection(db,"publicCourses",projectId,"materials");
+  const [existingClassSnap,existingMaterialSnap]=await Promise.all([
+    firebase.fsMod.getDocs(classesRef),
+    firebase.fsMod.getDocs(materialsRef)
+  ]);
 
   const batch=firebase.fsMod.writeBatch(db);
   batch.set(publicRef,{
@@ -372,11 +503,12 @@ export async function publishStudentPortalData(projectId=activeProjectId){
     portalSubtitle: String(project.portalSubtitle||`${project.academicYear}학년도 ${project.grade}학년 · ${project.subjectName}`),
     classes: Array.isArray(project.classes)?project.classes.map(String):[],
     publishedRecordCount: visibleRows.length,
+    publishedMaterialCount: visibleMaterials.length,
     updatedAt: firebase.fsMod.serverTimestamp()
   },{merge:true});
 
-  // 현재 공개 반 문서를 먼저 정리하여, 공개 해제된 기록/삭제된 반의 잔존 데이터를 제거합니다.
   existingClassSnap.docs.forEach(d=>batch.delete(d.ref));
+  existingMaterialSnap.docs.forEach(d=>batch.delete(d.ref));
 
   for(const className of (project.classes||[])){
     const classRows=visibleRows.filter(r=>String(r.className)===String(className));
@@ -384,17 +516,21 @@ export async function publishStudentPortalData(projectId=activeProjectId){
     const current=publicRecord(classRows[classRows.length-1]);
     const recent=classRows.slice(-10).reverse().map(publicRecord);
     batch.set(firebase.fsMod.doc(db,"publicCourses",projectId,"classes",String(className)),{
-      className: String(className),
-      current,
-      recent,
-      updatedAt: firebase.fsMod.serverTimestamp()
+      className: String(className), current, recent, updatedAt: firebase.fsMod.serverTimestamp()
     });
+  }
+  for(const material of visibleMaterials){
+    batch.set(
+      firebase.fsMod.doc(db,"publicCourses",projectId,"materials",String(material.id)),
+      publicMaterial(material)
+    );
   }
 
   await batch.commit();
   return {
     projectId,
     publishedRecordCount: visibleRows.length,
+    publishedMaterialCount: visibleMaterials.length,
     classCount: (project.classes||[]).filter(c=>visibleRows.some(r=>String(r.className)===String(c))).length
   };
 }
@@ -408,5 +544,4 @@ export async function archiveProject(projectId){
   if(!p) return;
   await saveProject({...p,status:"ARCHIVED"});
 }
-
 export function getProjects(){ return currentProjects.map(cloneProject); }

@@ -2,6 +2,7 @@ import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalize
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
+  upsertMaterial, deleteMaterialById, migrateLocalMaterialsToCloud, replaceAllMaterials,
   setActiveProject, getActiveProjectId, getProjects, saveProject, archiveProject,
   publishStudentPortalData, studentPortalUrl
 } from "./db.js";
@@ -19,6 +20,11 @@ let projects=[];
 let activeProject=null;
 let records=[];
 let recordSource="local";
+let materials=[];
+let materialSource="local";
+let editingMaterialId=null;
+let materialCategoryFilter="ALL";
+let materialSearch="";
 let currentMonth=new Date();
 let calendarFilter="ALL";
 let showAcademic=true;
@@ -75,6 +81,7 @@ function setView(name){
   if(name==="calendar")renderCalendar();
   if(name==="progress")renderProgress();
   if(name==="history")renderHistory();
+  if(name==="materials")renderMaterials();
   if(name==="projects")renderProjects();
 }
 
@@ -122,7 +129,7 @@ async function switchProject(projectId){
   renderHeader();
   rebuildDynamicOptions();
   await setActiveProject(projectId);
-  renderToday();renderCalendar();renderProgress();renderHistory();renderProjects();
+  renderToday();renderCalendar();renderProgress();renderHistory();renderMaterials();renderProjects();
   toast(`${p.adminLabel} 프로젝트로 전환했습니다.`);
 }
 
@@ -339,6 +346,186 @@ async function deleteEditing(){
   }catch(err){alert("삭제 실패: "+err.message);}
 }
 
+
+const MATERIAL_CATEGORIES=["수업자료","활동지","PPT","수행평가","시험대비","기타"];
+
+function extractDriveFileId(url){
+  const raw=String(url||"").trim();
+  if(!raw) return "";
+  const patterns=[
+    /\/file\/d\/([a-zA-Z0-9_-]+)/,
+    /\/document\/d\/([a-zA-Z0-9_-]+)/,
+    /\/presentation\/d\/([a-zA-Z0-9_-]+)/,
+    /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/,
+    /[?&]id=([a-zA-Z0-9_-]+)/,
+    /\/d\/([a-zA-Z0-9_-]+)/
+  ];
+  for(const re of patterns){
+    const m=raw.match(re);
+    if(m?.[1]) return m[1];
+  }
+  if(/^[a-zA-Z0-9_-]{20,}$/.test(raw)) return raw;
+  return "";
+}
+function driveLinks(url){
+  const fileId=extractDriveFileId(url);
+  if(!fileId) return {fileId:"",previewUrl:"",downloadUrl:""};
+  return {
+    fileId,
+    previewUrl:`https://drive.google.com/file/d/${fileId}/view`,
+    downloadUrl:`https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`
+  };
+}
+function fmtMaterialDate(value){
+  if(!value) return "-";
+  const d=new Date(value);
+  if(Number.isNaN(d.getTime())) return String(value).slice(0,10)||"-";
+  return `${d.getFullYear()}.${pad(d.getMonth()+1)}.${pad(d.getDate())}`;
+}
+function materialTargetLabel(m){
+  const targets=Array.isArray(m.targetClasses)?m.targetClasses:[];
+  if(targets.includes("ALL")||targets.length===0) return "전체 반";
+  return targets.map(x=>`${x}반`).join(" · ");
+}
+function renderMaterialTargetChecks(selected=["ALL"]){
+  const selectedSet=new Set(Array.isArray(selected)&&selected.length?selected:["ALL"]);
+  const html=["ALL",...projectClasses()].map(c=>{
+    const label=c==="ALL"?"전체":`${c}반`;
+    return `<label class="target-check"><input type="checkbox" name="materialTarget" value="${esc(c)}" ${selectedSet.has(c)?"checked":""}/> ${esc(label)}</label>`;
+  }).join("");
+  $("materialTargetClasses").innerHTML=html;
+  document.querySelectorAll('input[name="materialTarget"]').forEach(cb=>{
+    cb.onchange=()=>{
+      if(cb.value==="ALL"&&cb.checked){
+        document.querySelectorAll('input[name="materialTarget"]').forEach(x=>{if(x.value!=="ALL")x.checked=false;});
+      }else if(cb.value!=="ALL"&&cb.checked){
+        const all=document.querySelector('input[name="materialTarget"][value="ALL"]');
+        if(all) all.checked=false;
+      }
+      const checked=[...document.querySelectorAll('input[name="materialTarget"]:checked')];
+      if(!checked.length){
+        const all=document.querySelector('input[name="materialTarget"][value="ALL"]');
+        if(all) all.checked=true;
+      }
+    };
+  });
+}
+function selectedMaterialTargets(){
+  const vals=[...document.querySelectorAll('input[name="materialTarget"]:checked')].map(x=>x.value);
+  return vals.length?vals:["ALL"];
+}
+function openMaterialDialog(material=null){
+  if(!activeProject) return;
+  editingMaterialId=material?.id||null;
+  $("materialDialogTitle").textContent=material?"수업 자료 수정":"새 수업 자료 등록";
+  $("materialForm").reset();
+  $("materialTitle").value=material?.title||"";
+  $("materialCategory").value=material?.category||"수업자료";
+  $("materialFileType").value=material?.fileType||"PDF";
+  $("materialDescription").value=material?.description||"";
+  $("materialDriveUrl").value=material?.driveUrl||material?.previewUrl||"";
+  $("materialPublished").checked=material?.isPublished!==false;
+  $("deleteMaterialBtn").classList.toggle("hidden",!material);
+  renderMaterialTargetChecks(material?.targetClasses||["ALL"]);
+  $("materialDialog").showModal();
+}
+async function publishAfterMaterialChange(successText){
+  if(storageMode()!=="cloud"){
+    toast(`${successText} · 로그인 후 학생 포털에 발행할 수 있습니다.`);
+    return;
+  }
+  try{
+    const result=await publishStudentPortalData(activeProject.id);
+    toast(`${successText} + 학생 포털 반영 (${result.publishedMaterialCount}개 자료)`);
+  }catch(err){
+    console.warn(err);
+    alert(`${successText}은 완료됐지만 학생 포털 발행에 실패했습니다.\n\n${err.message}\n\nFirebase 규칙 v2.2가 적용되었는지 확인해 주세요.`);
+  }
+}
+async function saveMaterialForm(e){
+  e.preventDefault();
+  const rawUrl=$("materialDriveUrl").value.trim();
+  const links=driveLinks(rawUrl);
+  if(!links.fileId){
+    alert("Google Drive 공유 링크에서 파일 ID를 찾지 못했습니다.\nDrive에서 ‘공유 → 링크 복사’로 받은 주소를 붙여 넣어 주세요.");
+    return;
+  }
+  const existing=materials.find(x=>String(x.id)===String(editingMaterialId));
+  const now=new Date().toISOString();
+  const material={
+    id:editingMaterialId||makeId(),
+    projectId:activeProject.id,
+    title:$("materialTitle").value.trim(),
+    description:$("materialDescription").value.trim(),
+    category:$("materialCategory").value,
+    fileType:$("materialFileType").value,
+    driveUrl:rawUrl,
+    ...links,
+    targetClasses:selectedMaterialTargets(),
+    isPublished:$("materialPublished").checked,
+    createdAt:existing?.createdAt||now,
+    updatedAt:now
+  };
+  if(!material.title){ alert("자료명을 입력해 주세요."); return; }
+  try{
+    await upsertMaterial(material);
+    $("materialDialog").close();
+    await publishAfterMaterialChange("자료 저장 완료");
+  }catch(err){ alert("자료 저장 실패: "+err.message); }
+}
+async function deleteEditingMaterial(){
+  if(!editingMaterialId||!confirm("이 자료를 목록에서 삭제할까요?\n\nGoogle Drive의 원본 파일은 삭제되지 않습니다.")) return;
+  try{
+    await deleteMaterialById(editingMaterialId);
+    $("materialDialog").close();
+    editingMaterialId=null;
+    await publishAfterMaterialChange("자료 삭제 완료");
+  }catch(err){ alert("자료 삭제 실패: "+err.message); }
+}
+function renderMaterials(){
+  if(!activeProject||!$("view-materials")) return;
+  const q=materialSearch.trim().toLowerCase();
+  const rows=materials
+    .filter(m=>materialCategoryFilter==="ALL"||m.category===materialCategoryFilter)
+    .filter(m=>!q||[m.title,m.description,m.category,m.fileType,materialTargetLabel(m)].join(" ").toLowerCase().includes(q))
+    .sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+  const filters=["ALL",...MATERIAL_CATEGORIES].map(c=>`<button class="chip ${materialCategoryFilter===c?"active":""}" data-material-category="${esc(c)}">${c==="ALL"?"전체":esc(c)}</button>`).join("");
+  const list=rows.length?rows.map(m=>`
+    <div class="material-card card">
+      <div class="material-top">
+        <div class="material-badges"><span class="material-badge category">${esc(m.category||"수업자료")}</span><span class="material-badge type">${esc(m.fileType||"기타")}</span>${m.isPublished!==false?`<span class="material-badge published">학생 공개</span>`:`<span class="material-badge private">비공개</span>`}</div>
+        <button class="btn small-btn" data-material-edit="${esc(m.id)}">수정</button>
+      </div>
+      <h3>${esc(m.title||"제목 없음")}</h3>
+      <p>${esc(m.description||"설명 없음")}</p>
+      <div class="material-meta">대상: <b>${esc(materialTargetLabel(m))}</b> · 수정 ${esc(fmtMaterialDate(m.updatedAt))}</div>
+      <div class="material-actions">
+        <a class="btn small-btn" href="${esc(m.previewUrl||m.driveUrl||"#")}" target="_blank" rel="noopener">Drive 열기</a>
+        ${m.downloadUrl?`<a class="btn small-btn" href="${esc(m.downloadUrl)}" target="_blank" rel="noopener">다운로드 확인</a>`:""}
+      </div>
+    </div>`).join(""):`<div class="card material-empty">등록된 수업 자료가 없습니다.<br><span class="small muted">Drive에 파일을 올린 뒤 공유 링크를 등록하세요.</span></div>`;
+
+  $("view-materials").innerHTML=`
+    <div class="material-head">
+      <div><h2>수업 자료 관리</h2><div class="small muted">파일은 Google Drive에 보관하고, 이 시스템에는 공개용 링크와 자료 정보만 저장합니다.</div></div>
+      <button class="btn primary" id="newMaterialBtn">＋ 새 자료 등록</button>
+    </div>
+    <div class="card material-guide">
+      <b>무료 운영 방식</b>
+      <span>① Drive에 파일 업로드 → ② ‘링크가 있는 모든 사용자 · 뷰어’로 공유 → ③ 공유 링크를 아래 자료에 등록</span>
+    </div>
+    <div class="material-tools">
+      <div class="filters">${filters}</div>
+      <input id="materialSearchInput" value="${esc(materialSearch)}" placeholder="자료명·설명 검색"/>
+    </div>
+    <div class="material-grid">${list}</div>`;
+
+  $("newMaterialBtn").onclick=()=>openMaterialDialog();
+  $("materialSearchInput").oninput=e=>{materialSearch=e.target.value;renderMaterials();};
+  document.querySelectorAll("[data-material-category]").forEach(b=>b.onclick=()=>{materialCategoryFilter=b.dataset.materialCategory;renderMaterials();});
+  document.querySelectorAll("[data-material-edit]").forEach(b=>b.onclick=()=>openMaterialDialog(materials.find(m=>String(m.id)===String(b.dataset.materialEdit))));
+}
+
 function updateAuthUi(state){
   const pill=$("syncPill");
   if(state.error){pill.textContent="동기화 오류";pill.className="sync-pill error";}
@@ -350,15 +537,22 @@ function updateAuthUi(state){
 }
 
 function exportBackup(){
-  const payload={system:"JCOOP Course Control",version:APP_VERSION,project:activeProject,exportedAt:new Date().toISOString(),records};
+  const payload={system:"JCOOP Course Control",version:APP_VERSION,project:activeProject,exportedAt:new Date().toISOString(),records,materials};
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`JCOOP_${activeProject.shortName||activeProject.subjectName}_진도백업_${todayYmd()}.json`;a.click();URL.revokeObjectURL(a.href);
 }
 async function importBackup(file){
   const text=await file.text(),data=JSON.parse(text),arr=Array.isArray(data)?data:data.records;
   if(!Array.isArray(arr))throw new Error("백업 형식이 올바르지 않습니다.");
-  if(!confirm(`현재 '${activeProject.adminLabel}' 기록을 지우고 ${arr.length}개 기록으로 교체할까요?`))return;
-  await replaceAllRecords(arr);toast("백업을 복원했습니다.");
+  const importedMaterials=Array.isArray(data?.materials)?data.materials:null;
+  const msg=importedMaterials
+    ? `현재 '${activeProject.adminLabel}'의 기록과 자료 목록을 지우고\n기록 ${arr.length}개 · 자료 ${importedMaterials.length}개로 교체할까요?`
+    : `현재 '${activeProject.adminLabel}' 기록을 지우고 ${arr.length}개 기록으로 교체할까요?\n\n※ 이 백업에는 자료실 데이터가 없어 현재 자료 목록은 유지됩니다.`;
+  if(!confirm(msg))return;
+  await replaceAllRecords(arr);
+  if(importedMaterials) await replaceAllMaterials(importedMaterials);
+  if(storageMode()==="cloud") await publishStudentPortalData(activeProject.id);
+  toast(importedMaterials?"기록과 자료실 백업을 복원했습니다.":"기록 백업을 복원했습니다.");
 }
 
 function projectIdFromForm(year,semester,grade,subject){
@@ -437,14 +631,14 @@ async function publishPortalNow(){
     alert("학생 포털 발행은 Google 로그인 상태에서 사용할 수 있습니다.");
     return;
   }
-  if(!confirm(`현재 '${activeProject.adminLabel}'의 학생 공개 대상 진도를 포털에 반영할까요?\n\n교사용 메모는 공개되지 않습니다.`)) return;
+  if(!confirm(`현재 '${activeProject.adminLabel}'의 학생 공개 진도와 수업 자료를 포털에 반영할까요?\n\n교사용 메모는 공개되지 않으며, 자료는 공개 설정된 항목만 반영됩니다.`)) return;
   const btn=$("publishPortalBtn");
   if(btn){btn.disabled=true;btn.textContent="발행 중...";}
   try{
     const result=await publishStudentPortalData(activeProject.id);
-    toast(`학생 포털 발행 완료 · ${result.publishedRecordCount}건`);
+    toast(`학생 포털 발행 완료 · 진도 ${result.publishedRecordCount}건 · 자료 ${result.publishedMaterialCount}개`);
   }catch(err){
-    alert("학생 포털 발행 실패: "+err.message+"\n\nFirebase 규칙이 v2.1용으로 적용되었는지 확인해 주세요.");
+    alert("학생 포털 발행 실패: "+err.message+"\n\nFirebase 규칙이 v2.2용으로 적용되었는지 확인해 주세요.");
   }finally{
     if(btn){btn.disabled=false;btn.textContent="학생 포털 지금 발행";}
   }
@@ -516,6 +710,7 @@ function bind(){
   $("loginBtn").onclick=async()=>{if($("loginBtn").textContent==="온라인 설정"){$("settingsDialog").showModal();return;}try{await signInGoogle();}catch(err){alert("Google 로그인 실패: "+err.message);}};
   $("logoutBtn").onclick=()=>signOutGoogle();$("closeSettings").onclick=()=>$("settingsDialog").close();
   $("closeProjectDialog").onclick=()=>$("projectDialog").close();$("cancelProjectBtn").onclick=()=>$("projectDialog").close();$("projectForm").onsubmit=saveProjectForm;
+  $("closeMaterialDialog").onclick=()=>$("materialDialog").close();$("cancelMaterialBtn").onclick=()=>$("materialDialog").close();$("materialForm").onsubmit=saveMaterialForm;$("deleteMaterialBtn").onclick=deleteEditingMaterial;
 }
 
 bind();
@@ -531,12 +726,23 @@ initDataLayer({
     records=rows.map(r=>({...r,_source:source}));recordSource=source;
     renderToday();renderCalendar();renderProgress();renderHistory();
   },
+  onMaterials:(rows,source,projectId)=>{
+    if(projectId&&activeProject&&projectId!==activeProject.id)return;
+    materials=rows.map(r=>({...r,_source:source}));materialSource=source;
+    renderMaterials();
+  },
   onAuth:state=>{
     updateAuthUi(state);
     if(state.user&&recordSource==="local"){
       const localCount=records.length;
       if(localCount>0&&confirm(`현재 프로젝트에 이 기기에 저장된 ${localCount}개 기록이 있습니다.\n클라우드 프로젝트로 복사할까요?`)){
         migrateLocalToCloud().then(n=>toast(`${n}개 기록을 클라우드로 복사했습니다.`)).catch(err=>alert(err.message));
+      }
+    }
+    if(state.user&&materialSource==="local"){
+      const localMaterialCount=materials.length;
+      if(localMaterialCount>0&&confirm(`현재 프로젝트에 이 기기에 저장된 자료 ${localMaterialCount}개가 있습니다.\n클라우드 프로젝트로 복사할까요?`)){
+        migrateLocalMaterialsToCloud().then(async n=>{await publishStudentPortalData(activeProject.id);toast(`${n}개 자료를 클라우드로 복사하고 포털에 반영했습니다.`);}).catch(err=>alert(err.message));
       }
     }
   }

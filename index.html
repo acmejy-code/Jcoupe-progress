@@ -36,6 +36,7 @@
     <button class="tab" data-view="calendar">달력</button>
     <button class="tab" data-view="progress">반별 진도</button>
     <button class="tab" data-view="history">기록 조회</button>
+    <button class="tab" data-view="materials">수업 자료</button>
     <button class="tab" data-view="projects">수업 프로젝트</button>
   </nav>
 
@@ -77,6 +78,8 @@
         <div id="historyList"></div>
       </div>
     </section>
+
+    <section id="view-materials" class="view"></section>
 
     <section id="view-projects" class="view"></section>
   </main>
@@ -168,6 +171,44 @@
     <div class="modal-foot">
       <span class="spacer"></span>
       <button type="button" class="btn" id="cancelProjectBtn">취소</button>
+      <button type="submit" class="btn primary">저장</button>
+    </div>
+  </form>
+</dialog>
+
+
+<dialog id="materialDialog">
+  <div class="modal-head">
+    <div>
+      <strong id="materialDialogTitle">수업 자료 등록</strong>
+      <div class="small muted">Google Drive 파일의 공유 링크를 등록합니다. 파일 자체는 Firebase에 저장하지 않습니다.</div>
+    </div>
+    <button class="icon-btn" id="closeMaterialDialog">✕</button>
+  </div>
+  <form id="materialForm">
+    <div class="modal-body">
+      <div class="field full"><label>자료명</label><input id="materialTitle" required placeholder="예: 니체의 삶의 긍정 설명가 활동 PPT"/></div>
+      <div class="field"><label>분류</label><select id="materialCategory"><option>수업자료</option><option>활동지</option><option>PPT</option><option>수행평가</option><option>시험대비</option><option>기타</option></select></div>
+      <div class="field"><label>파일 형식</label><select id="materialFileType"><option>PDF</option><option>PPTX</option><option>HWP</option><option>HWPX</option><option>DOCX</option><option>XLSX</option><option>ZIP</option><option>기타</option></select></div>
+      <div class="field full"><label>간단한 설명</label><textarea id="materialDescription" placeholder="학생에게 보일 자료 설명"></textarea></div>
+      <div class="field full">
+        <label>Google Drive 공유 링크</label>
+        <input id="materialDriveUrl" required placeholder="https://drive.google.com/file/d/.../view"/>
+        <div class="small muted">※ Drive에서 반드시 <b>링크가 있는 모든 사용자 → 뷰어</b>로 공유한 뒤 링크를 붙여 넣으세요.</div>
+      </div>
+      <div class="field full">
+        <label>공개 대상</label>
+        <div class="target-classes" id="materialTargetClasses"></div>
+        <div class="small muted">‘전체’를 선택하면 모든 반에서 표시됩니다. 특정 반만 선택하면 해당 반 학생에게만 표시됩니다.</div>
+      </div>
+      <div class="field full check-field">
+        <label><input type="checkbox" id="materialPublished" checked/> 학생 포털에 공개</label>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn danger hidden" id="deleteMaterialBtn">삭제</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="cancelMaterialBtn">취소</button>
       <button type="submit" class="btn primary">저장</button>
     </div>
   </form>

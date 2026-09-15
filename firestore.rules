@@ -9,9 +9,7 @@ service cloud.firestore {
                          && request.auth.uid == userId;
     }
 
-    // 학생용 공개 수업 데이터.
-    // 누구나 읽을 수 있지만, 최초 생성자는 로그인 사용자 본인(ownerUid)이어야 합니다.
-    // 이후 수정/삭제는 해당 ownerUid 사용자만 가능합니다.
+    // 학생용 공개 데이터: 진도 + 수업 자료 메타데이터.
     match /publicCourses/{courseId} {
       allow read: if true;
       allow create: if request.auth != null
@@ -23,6 +21,12 @@ service cloud.firestore {
                     && resource.data.ownerUid == request.auth.uid;
 
       match /classes/{classId} {
+        allow read: if true;
+        allow create, update, delete: if request.auth != null
+          && getAfter(/databases/$(database)/documents/publicCourses/$(courseId)).data.ownerUid == request.auth.uid;
+      }
+
+      match /materials/{materialId} {
         allow read: if true;
         allow create, update, delete: if request.auth != null
           && getAfter(/databases/$(database)/documents/publicCourses/$(courseId)).data.ownerUid == request.auth.uid;
