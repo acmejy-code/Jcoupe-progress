@@ -1,22 +1,9 @@
-JCOUP 수업 통합 제어 시스템 v2.2.0 검증 결과
+JCOUP 수업 통합 제어 시스템 v2.2.1 검증 결과
 
-[통과]
-- js/app.js Node 구문 검사
-- js/db.js Node 구문 검사
-- js/project-data.js Node 구문 검사
-- js/firebase-config.js Node 구문 검사
-- 기존 진도 관리 기능 코드 유지
-- Google Drive 파일 ID 추출 로직 포함
-- 자료 CRUD 로컬/클라우드 경로 포함
-- 공개 materials 하위 컬렉션 발행 포함
-- 공개 해제/삭제 시 기존 공개 material 문서 정리 포함
-- 백업에 materials 포함
-- 구버전 백업(records only) 호환
-- Firestore rules에 publicCourses/{courseId}/materials 추가
-- Firebase Storage 의존성 없음
-
-[실서비스에서 확인할 항목]
-- Firebase Console에 새 firestore.rules 게시
-- Drive 파일 공유 설정: 링크가 있는 모든 사용자 / 뷰어
-- GitHub Pages 재배포 후 실제 Google 로그인
-- 학생 포털에서 미리 보기/다운로드 버튼 실제 파일 접근
+- 기존 수업 진도/프로젝트/학생 포털 발행 기능 유지
+- 관리자 수업 자료 등록 화면에서 반별 공개 대상 선택 UI 제거
+- 자료 저장 시 targetClasses=["ALL"] 자동 저장
+- 공개 자료 발행 시 targetClasses=["ALL"] 강제
+- 기존 v2.2.0 자료도 수정/재발행 시 공통 자료로 정규화
+- Google Drive 파일 ID 추출/미리보기/다운로드 기능 유지
+- 학생 포털 v1.2.1 공통 자료실 구조와 호환

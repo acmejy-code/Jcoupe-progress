@@ -56,7 +56,7 @@ dialog{border:0;border-radius:16px;padding:0;width:min(760px,calc(100% - 20px));
 .project-summary-row{display:flex;justify-content:space-between;gap:14px;align-items:center}.project-publish-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 @media(max-width:760px){.project-summary-row{align-items:flex-start;flex-direction:column}.project-publish-actions{justify-content:flex-start;width:100%}}
 
-/* v2.2.0 - Google Drive 수업 자료 관리 */
+/* v2.2.1 - Google Drive 공통 수업 자료 관리 */
 .material-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.material-head h2{margin:0}
 .material-guide{padding:13px 15px;margin-bottom:12px;background:#f8fbff;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.material-guide b{color:#1d4ed8}.material-guide span{font-size:12px;color:var(--muted)}
 .material-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}.material-tools input{min-width:250px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff}

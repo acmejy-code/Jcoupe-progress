@@ -382,38 +382,6 @@ function fmtMaterialDate(value){
   if(Number.isNaN(d.getTime())) return String(value).slice(0,10)||"-";
   return `${d.getFullYear()}.${pad(d.getMonth()+1)}.${pad(d.getDate())}`;
 }
-function materialTargetLabel(m){
-  const targets=Array.isArray(m.targetClasses)?m.targetClasses:[];
-  if(targets.includes("ALL")||targets.length===0) return "전체 반";
-  return targets.map(x=>`${x}반`).join(" · ");
-}
-function renderMaterialTargetChecks(selected=["ALL"]){
-  const selectedSet=new Set(Array.isArray(selected)&&selected.length?selected:["ALL"]);
-  const html=["ALL",...projectClasses()].map(c=>{
-    const label=c==="ALL"?"전체":`${c}반`;
-    return `<label class="target-check"><input type="checkbox" name="materialTarget" value="${esc(c)}" ${selectedSet.has(c)?"checked":""}/> ${esc(label)}</label>`;
-  }).join("");
-  $("materialTargetClasses").innerHTML=html;
-  document.querySelectorAll('input[name="materialTarget"]').forEach(cb=>{
-    cb.onchange=()=>{
-      if(cb.value==="ALL"&&cb.checked){
-        document.querySelectorAll('input[name="materialTarget"]').forEach(x=>{if(x.value!=="ALL")x.checked=false;});
-      }else if(cb.value!=="ALL"&&cb.checked){
-        const all=document.querySelector('input[name="materialTarget"][value="ALL"]');
-        if(all) all.checked=false;
-      }
-      const checked=[...document.querySelectorAll('input[name="materialTarget"]:checked')];
-      if(!checked.length){
-        const all=document.querySelector('input[name="materialTarget"][value="ALL"]');
-        if(all) all.checked=true;
-      }
-    };
-  });
-}
-function selectedMaterialTargets(){
-  const vals=[...document.querySelectorAll('input[name="materialTarget"]:checked')].map(x=>x.value);
-  return vals.length?vals:["ALL"];
-}
 function openMaterialDialog(material=null){
   if(!activeProject) return;
   editingMaterialId=material?.id||null;
@@ -426,7 +394,6 @@ function openMaterialDialog(material=null){
   $("materialDriveUrl").value=material?.driveUrl||material?.previewUrl||"";
   $("materialPublished").checked=material?.isPublished!==false;
   $("deleteMaterialBtn").classList.toggle("hidden",!material);
-  renderMaterialTargetChecks(material?.targetClasses||["ALL"]);
   $("materialDialog").showModal();
 }
 async function publishAfterMaterialChange(successText){
@@ -461,7 +428,8 @@ async function saveMaterialForm(e){
     fileType:$("materialFileType").value,
     driveUrl:rawUrl,
     ...links,
-    targetClasses:selectedMaterialTargets(),
+    // v2.2.1: 수업 자료는 모든 학생 공통 자료로 고정
+    targetClasses:["ALL"],
     isPublished:$("materialPublished").checked,
     createdAt:existing?.createdAt||now,
     updatedAt:now
@@ -487,7 +455,7 @@ function renderMaterials(){
   const q=materialSearch.trim().toLowerCase();
   const rows=materials
     .filter(m=>materialCategoryFilter==="ALL"||m.category===materialCategoryFilter)
-    .filter(m=>!q||[m.title,m.description,m.category,m.fileType,materialTargetLabel(m)].join(" ").toLowerCase().includes(q))
+    .filter(m=>!q||[m.title,m.description,m.category,m.fileType].join(" ").toLowerCase().includes(q))
     .sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
   const filters=["ALL",...MATERIAL_CATEGORIES].map(c=>`<button class="chip ${materialCategoryFilter===c?"active":""}" data-material-category="${esc(c)}">${c==="ALL"?"전체":esc(c)}</button>`).join("");
   const list=rows.length?rows.map(m=>`
@@ -498,7 +466,7 @@ function renderMaterials(){
       </div>
       <h3>${esc(m.title||"제목 없음")}</h3>
       <p>${esc(m.description||"설명 없음")}</p>
-      <div class="material-meta">대상: <b>${esc(materialTargetLabel(m))}</b> · 수정 ${esc(fmtMaterialDate(m.updatedAt))}</div>
+      <div class="material-meta">공통 자료 · 수정 ${esc(fmtMaterialDate(m.updatedAt))}</div>
       <div class="material-actions">
         <a class="btn small-btn" href="${esc(m.previewUrl||m.driveUrl||"#")}" target="_blank" rel="noopener">Drive 열기</a>
         ${m.downloadUrl?`<a class="btn small-btn" href="${esc(m.downloadUrl)}" target="_blank" rel="noopener">다운로드 확인</a>`:""}
@@ -507,7 +475,7 @@ function renderMaterials(){
 
   $("view-materials").innerHTML=`
     <div class="material-head">
-      <div><h2>수업 자료 관리</h2><div class="small muted">파일은 Google Drive에 보관하고, 이 시스템에는 공개용 링크와 자료 정보만 저장합니다.</div></div>
+      <div><h2>수업 자료 관리</h2><div class="small muted">파일은 Google Drive에 보관하며, 등록한 자료는 모든 학생에게 공통으로 게시됩니다.</div></div>
       <button class="btn primary" id="newMaterialBtn">＋ 새 자료 등록</button>
     </div>
     <div class="card material-guide">

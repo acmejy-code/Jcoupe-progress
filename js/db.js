@@ -279,8 +279,9 @@ function normalizeMaterial(material){
   copy.fileId=String(copy.fileId||"").trim();
   copy.previewUrl=String(copy.previewUrl||"").trim();
   copy.downloadUrl=String(copy.downloadUrl||"").trim();
-  copy.targetClasses=Array.isArray(copy.targetClasses)?copy.targetClasses.map(String):["ALL"];
-  if(copy.targetClasses.length===0) copy.targetClasses=["ALL"];
+  // v2.2.1: 학생 자료실은 반 구분 없이 전체 학생 공통 자료로 운영
+  // 하위 호환을 위해 필드는 유지하되 값은 항상 ALL로 고정한다.
+  copy.targetClasses=["ALL"];
   copy.isPublished=copy.isPublished!==false;
   return copy;
 }
@@ -453,7 +454,7 @@ function publicMaterial(material){
     fileId: String(material.fileId||""),
     previewUrl: String(material.previewUrl||""),
     downloadUrl: String(material.downloadUrl||""),
-    targetClasses: Array.isArray(material.targetClasses)?material.targetClasses.map(String):["ALL"],
+    targetClasses: ["ALL"],
     createdAt: String(material.createdAt||""),
     updatedAt: String(material.updatedAt||"")
   };
