@@ -65,7 +65,7 @@ dialog{border:0;border-radius:16px;padding:0;width:min(760px,calc(100% - 20px));
 @media(max-width:1000px){.material-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:680px){.material-head{align-items:flex-start;flex-direction:column}.material-head .btn{width:100%}.material-tools{align-items:stretch;flex-direction:column}.material-tools input{min-width:0;width:100%}.material-grid{grid-template-columns:1fr}}
 
-/* v2.3.0 수행평가 응시 관리 */
+/* v2.3.1 수행평가 응시 관리 */
 .wide-dialog{width:min(860px,94vw)}
 .inline-field{display:flex;gap:8px}.inline-field input{flex:1}
 .check-grid{display:flex;gap:12px;flex-wrap:wrap;padding:10px 0}.check-grid label{font-weight:800}

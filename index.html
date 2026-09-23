@@ -254,10 +254,16 @@
   <div class="modal-body roster-modal-body">
     <div class="field"><label>반</label><select id="rosterClass"></select></div>
     <div class="field"><label>한 줄 좌석 수</label><select id="rosterColumns"><option>4</option><option selected>5</option><option>6</option><option>7</option><option>8</option></select></div>
-    <div class="field full"><label>학생 명단 붙여넣기</label><textarea id="rosterText" class="roster-text" placeholder="학번 이름
-2201 김민수
-2202 이서연
+    <div class="field full">
+      <label>학생 명단 파일 불러오기</label>
+      <input id="rosterFile" type="file" accept=".xlsx,.xls,.csv,.tsv,.txt">
+      <div class="small muted" id="rosterFileStatus">Excel(.xlsx/.xls), CSV, TSV, TXT 파일을 불러올 수 있습니다. 첫 행에 '학번', '이름'이 있으면 자동 인식합니다.</div>
+    </div>
+    <div class="field full"><label>학생 명단 붙여넣기 · 확인</label><textarea id="rosterText" class="roster-text" placeholder="학번 이름
+20101 홍길동
+20102 김민수
 
+4자리·5자리 학번을 모두 지원합니다.
 쉼표·탭·공백으로 구분해도 됩니다."></textarea></div>
     <div class="field full"><div class="small muted">※ [명단 적용]은 선택 반의 기존 명단을 교체합니다. 좌석은 학번 오름차순으로 다시 생성됩니다.</div></div>
   </div>
@@ -283,6 +289,7 @@
 </dialog>
 
 <div class="toast" id="toast"></div>
-<script type="module" src="./js/app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script type="module" src="./js/app.js"></script>
 </body>
 </html>

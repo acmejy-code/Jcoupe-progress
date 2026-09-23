@@ -716,6 +716,7 @@ export async function replaceStudentsForClass(className,students){
   const normalized=(students||[]).map((s,i)=>normalizeStudent({...s,className:cls,seatOrder:i+1})).filter(s=>s.studentId&&s.name);
   const dup=new Set();
   for(const st of normalized){
+    if(!/^\d{4,5}$/.test(st.studentId)) throw new Error(`학번은 4자리 또는 5자리 숫자만 사용할 수 있습니다: ${st.studentId}`);
     if(dup.has(st.studentId)) throw new Error(`중복 학번이 있습니다: ${st.studentId}`);
     dup.add(st.studentId);
   }
