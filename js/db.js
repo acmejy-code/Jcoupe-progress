@@ -11,8 +11,15 @@ let db = null;
 let currentUser = null;
 let unsubscribeRecords = null;
 let unsubscribeMaterials = null;
+let unsubscribeStudents = null;
+let unsubscribeAssessments = null;
+let unsubscribeSeatLayouts = null;
+let unsubscribeAttempts = null;
 let onRecordsCb = null;
 let onMaterialsCb = null;
+let onStudentsCb = null;
+let onAssessmentsCb = null;
+let onSeatLayoutsCb = null;
 let onProjectsCb = null;
 let onAuthCb = null;
 let activeProjectId = localStorage.getItem(ACTIVE_PROJECT_KEY) || DEFAULT_PROJECT_ID;
@@ -140,7 +147,21 @@ function stopRecordListener(){
 function stopMaterialListener(){
   if(unsubscribeMaterials){ unsubscribeMaterials(); unsubscribeMaterials = null; }
 }
-function stopProjectListeners(){ stopRecordListener(); stopMaterialListener(); }
+function stopStudentListener(){
+  if(unsubscribeStudents){ unsubscribeStudents(); unsubscribeStudents = null; }
+}
+function stopAssessmentListener(){
+  if(unsubscribeAssessments){ unsubscribeAssessments(); unsubscribeAssessments = null; }
+}
+function stopSeatLayoutListener(){
+  if(unsubscribeSeatLayouts){ unsubscribeSeatLayouts(); unsubscribeSeatLayouts = null; }
+}
+function stopAttemptListener(){
+  if(unsubscribeAttempts){ unsubscribeAttempts(); unsubscribeAttempts = null; }
+}
+function stopProjectListeners(){
+  stopRecordListener(); stopMaterialListener(); stopStudentListener(); stopAssessmentListener(); stopSeatLayoutListener(); stopAttemptListener();
+}
 
 function startCloudRecordListener(){
   stopRecordListener();
@@ -180,14 +201,65 @@ function startCloudMaterialListener(){
   );
 }
 
+function startCloudStudentListener(){
+  stopStudentListener();
+  const q = firebase.fsMod.query(
+    firebase.fsMod.collection(db, "users", currentUser.uid, "courseProjects", activeProjectId, "students"),
+    firebase.fsMod.orderBy("studentId", "asc")
+  );
+  unsubscribeStudents = firebase.fsMod.onSnapshot(q, snap=>{
+    const rows=snap.docs.map(d=>({id:d.id,...d.data(),projectId:activeProjectId}));
+    onStudentsCb?.(rows,"cloud",activeProjectId);
+  }, err=>{
+    console.error("Firestore student snapshot error:",err);
+    onAuthCb?.({configured:true,user:currentUser,mode:"cloud",error:err.message});
+  });
+}
+
+function startCloudAssessmentListener(){
+  stopAssessmentListener();
+  const q = firebase.fsMod.query(
+    firebase.fsMod.collection(db, "users", currentUser.uid, "courseProjects", activeProjectId, "assessments"),
+    firebase.fsMod.orderBy("updatedAt", "desc")
+  );
+  unsubscribeAssessments = firebase.fsMod.onSnapshot(q, snap=>{
+    const rows=snap.docs.map(d=>({id:d.id,...d.data(),projectId:activeProjectId}));
+    onAssessmentsCb?.(rows,"cloud",activeProjectId);
+  }, err=>{
+    console.error("Firestore assessment snapshot error:",err);
+    onAuthCb?.({configured:true,user:currentUser,mode:"cloud",error:err.message});
+  });
+}
+
+function startCloudSeatLayoutListener(){
+  stopSeatLayoutListener();
+  unsubscribeSeatLayouts = firebase.fsMod.onSnapshot(
+    firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",activeProjectId,"seatLayouts"),
+    snap=>{
+      const rows=snap.docs.map(d=>({id:d.id,...d.data(),projectId:activeProjectId}));
+      onSeatLayoutsCb?.(rows,"cloud",activeProjectId);
+    },
+    err=>{
+      console.error("Firestore seat layout snapshot error:",err);
+      onAuthCb?.({configured:true,user:currentUser,mode:"cloud",error:err.message});
+    }
+  );
+}
+
 function startCloudProjectListeners(){
   startCloudRecordListener();
   startCloudMaterialListener();
+  startCloudStudentListener();
+  startCloudAssessmentListener();
+  startCloudSeatLayoutListener();
 }
 
-export async function initDataLayer({onRecords,onMaterials,onProjects,onAuth}){
+export async function initDataLayer({onRecords,onMaterials,onStudents,onAssessments,onSeatLayouts,onProjects,onAuth}){
   onRecordsCb=onRecords;
   onMaterialsCb=onMaterials;
+  onStudentsCb=onStudents;
+  onAssessmentsCb=onAssessments;
+  onSeatLayoutsCb=onSeatLayouts;
   onProjectsCb=onProjects;
   onAuthCb=onAuth;
 
@@ -196,6 +268,9 @@ export async function initDataLayer({onRecords,onMaterials,onProjects,onAuth}){
   emitLocalProjects();
   emitLocalRecords();
   emitLocalMaterials();
+  onStudentsCb?.([],"local",activeProjectId);
+  onAssessmentsCb?.([],"local",activeProjectId);
+  onSeatLayoutsCb?.([],"local",activeProjectId);
   if(legacyLocalCount) onAuthCb?.({configured:isFirebaseConfigured(),user:null,mode:"local",legacyLocalMigrated:legacyLocalCount});
 
   if(!isFirebaseConfigured()){
@@ -222,6 +297,9 @@ export async function initDataLayer({onRecords,onMaterials,onProjects,onAuth}){
         emitLocalProjects();
         emitLocalRecords();
         emitLocalMaterials();
+        onStudentsCb?.([],"local",activeProjectId);
+        onAssessmentsCb?.([],"local",activeProjectId);
+        onSeatLayoutsCb?.([],"local",activeProjectId);
         onAuthCb?.({configured:true,user:null,mode:"local"});
         return;
       }
@@ -247,7 +325,12 @@ export async function setActiveProject(projectId){
   activeProjectId=String(projectId||DEFAULT_PROJECT_ID);
   localStorage.setItem(ACTIVE_PROJECT_KEY,activeProjectId);
   if(storageMode()==="cloud") startCloudProjectListeners();
-  else { emitLocalRecords(); emitLocalMaterials(); }
+  else {
+    emitLocalRecords(); emitLocalMaterials();
+    onStudentsCb?.([],"local",activeProjectId);
+    onAssessmentsCb?.([],"local",activeProjectId);
+    onSeatLayoutsCb?.([],"local",activeProjectId);
+  }
 }
 
 export async function signInGoogle(){
@@ -538,6 +621,188 @@ export async function publishStudentPortalData(projectId=activeProjectId){
 
 export function studentPortalUrl(projectId=activeProjectId){
   return `https://acmejy-code.github.io/Jcoupe-class-portal/?project=${encodeURIComponent(projectId)}`;
+}
+
+
+function requireAssessmentCloud(){
+  if(storageMode()!=="cloud" || !currentUser || !firebase || !db){
+    throw new Error("수행평가 응시 관리는 Google 로그인 상태에서 사용할 수 있습니다.");
+  }
+}
+function normalizeNameKey(value){ return String(value||"").replace(/\s+/g,"").trim(); }
+function normalizeStudent(student){
+  return {
+    studentId:String(student.studentId||student.id||"").trim(),
+    name:String(student.name||"").trim(),
+    nameKey:normalizeNameKey(student.nameKey||student.name||""),
+    className:String(student.className||"").trim(),
+    seatOrder:Number(student.seatOrder||0),
+    updatedAt:new Date().toISOString(),
+    createdAt:String(student.createdAt||new Date().toISOString())
+  };
+}
+function normalizeAssessment(assessment){
+  const questions=Array.isArray(assessment.questions)?assessment.questions.map((q,i)=>({
+    id:String(q.id||`q${i+1}`),
+    prompt:String(q.prompt||"").trim(),
+    placeholder:String(q.placeholder||"").trim(),
+    required:q.required!==false
+  })).filter(q=>q.prompt):[];
+  return {
+    id:String(assessment.id||crypto.randomUUID()),
+    title:String(assessment.title||"").trim(),
+    description:String(assessment.description||"").trim(),
+    instructions:String(assessment.instructions||"").trim(),
+    accessCode:String(assessment.accessCode||"").trim(),
+    targetClasses:Array.isArray(assessment.targetClasses)?assessment.targetClasses.map(String).filter(Boolean):[],
+    durationMinutes:Math.max(0,Number(assessment.durationMinutes||0)),
+    status:["DRAFT","OPEN","CLOSED"].includes(String(assessment.status))?String(assessment.status):"DRAFT",
+    questions,
+    projectId:activeProjectId,
+    createdAt:String(assessment.createdAt||new Date().toISOString()),
+    updatedAt:new Date().toISOString()
+  };
+}
+async function ensurePublicCourseShell(){
+  const project=currentProjects.find(p=>String(p.id)===String(activeProjectId));
+  if(!project) throw new Error("현재 수업 프로젝트를 찾을 수 없습니다.");
+  await firebase.fsMod.setDoc(firebase.fsMod.doc(db,"publicCourses",activeProjectId),{
+    ownerUid:currentUser.uid,
+    projectId:project.id,
+    academicYear:Number(project.academicYear||0),
+    semester:String(project.semester||""),
+    grade:Number(project.grade||0),
+    subjectName:String(project.subjectName||""),
+    shortName:String(project.shortName||project.subjectName||""),
+    portalTitle:String(project.portalTitle||`${project.shortName||project.subjectName} 수업 종합 포털`),
+    portalSubtitle:String(project.portalSubtitle||`${project.academicYear}학년도 ${project.grade}학년 · ${project.subjectName}`),
+    classes:Array.isArray(project.classes)?project.classes.map(String):[],
+    updatedAt:firebase.fsMod.serverTimestamp()
+  },{merge:true});
+}
+async function publishAssessmentPublic(assessment){
+  requireAssessmentCloud();
+  const a=normalizeAssessment(assessment);
+  await ensurePublicCourseShell();
+  const batch=firebase.fsMod.writeBatch(db);
+  const metaRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id);
+  const contentRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id,"content","main");
+  batch.set(metaRef,{
+    ownerUid:currentUser.uid,
+    assessmentId:a.id,
+    title:a.title,
+    description:a.description,
+    status:a.status,
+    targetClasses:a.targetClasses,
+    durationMinutes:a.durationMinutes,
+    questionCount:a.questions.length,
+    updatedAt:firebase.fsMod.serverTimestamp()
+  },{merge:true});
+  batch.set(contentRef,{
+    assessmentId:a.id,
+    title:a.title,
+    instructions:a.instructions,
+    questions:a.questions,
+    updatedAt:firebase.fsMod.serverTimestamp()
+  },{merge:true});
+  await batch.commit();
+  return a;
+}
+
+export async function replaceStudentsForClass(className,students){
+  requireAssessmentCloud();
+  const cls=String(className||"").trim();
+  if(!cls) throw new Error("반을 선택해 주세요.");
+  const normalized=(students||[]).map((s,i)=>normalizeStudent({...s,className:cls,seatOrder:i+1})).filter(s=>s.studentId&&s.name);
+  const dup=new Set();
+  for(const st of normalized){
+    if(dup.has(st.studentId)) throw new Error(`중복 학번이 있습니다: ${st.studentId}`);
+    dup.add(st.studentId);
+  }
+  const col=firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",activeProjectId,"students");
+  const existing=await firebase.fsMod.getDocs(col);
+  const old=existing.docs.filter(d=>String(d.data().className||"")===cls);
+  const batch=firebase.fsMod.writeBatch(db);
+  old.forEach(d=>batch.delete(d.ref));
+  normalized.forEach(st=>batch.set(firebase.fsMod.doc(col,st.studentId),st));
+  await batch.commit();
+  await saveSeatLayout(cls,5,normalized.map(s=>s.studentId));
+  return normalized.length;
+}
+
+export async function saveSeatLayout(className,columns,orderedStudentIds){
+  requireAssessmentCloud();
+  const cls=String(className||"").trim();
+  await firebase.fsMod.setDoc(
+    firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"seatLayouts",cls),
+    {className:cls,columns:Math.min(8,Math.max(2,Number(columns||5))),orderedStudentIds:(orderedStudentIds||[]).map(String),updatedAt:new Date().toISOString()},
+    {merge:true}
+  );
+}
+
+export async function upsertAssessment(assessment){
+  requireAssessmentCloud();
+  const a=normalizeAssessment(assessment);
+  if(!a.title) throw new Error("수행평가 제목을 입력해 주세요.");
+  if(!a.accessCode) throw new Error("응시코드를 입력해 주세요.");
+  if(!a.targetClasses.length) throw new Error("응시 대상 반을 한 개 이상 선택해 주세요.");
+  if(!a.questions.length) throw new Error("문항을 한 개 이상 등록해 주세요.");
+  await firebase.fsMod.setDoc(
+    firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",a.id),
+    a,{merge:true}
+  );
+  await publishAssessmentPublic(a);
+  return a;
+}
+
+export async function setAssessmentStatus(assessmentId,status){
+  requireAssessmentCloud();
+  const ref=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId));
+  const snap=await firebase.fsMod.getDoc(ref);
+  if(!snap.exists()) throw new Error("수행평가를 찾을 수 없습니다.");
+  const a=normalizeAssessment({id:snap.id,...snap.data(),status});
+  await firebase.fsMod.setDoc(ref,a,{merge:true});
+  await publishAssessmentPublic(a);
+  return a;
+}
+
+export async function deleteAssessment(assessmentId){
+  requireAssessmentCloud();
+  const attempts=await firebase.fsMod.getDocs(firebase.fsMod.collection(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts"));
+  if(!attempts.empty) throw new Error("응시 기록이 있는 평가는 삭제할 수 없습니다. 테스트 기록을 먼저 초기화해 주세요.");
+  const batch=firebase.fsMod.writeBatch(db);
+  batch.delete(firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId)));
+  batch.delete(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"content","main"));
+  batch.delete(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",String(assessmentId)));
+  await batch.commit();
+}
+
+export function watchAssessmentAttempts(assessmentId,callback){
+  requireAssessmentCloud();
+  stopAttemptListener();
+  if(!assessmentId){ callback?.([]); return ()=>{}; }
+  unsubscribeAttempts=firebase.fsMod.onSnapshot(
+    firebase.fsMod.collection(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts"),
+    snap=>callback?.(snap.docs.map(d=>({id:d.id,...d.data()}))),
+    err=>{ console.error("attempt listener error",err); callback?.([],err); }
+  );
+  return ()=>stopAttemptListener();
+}
+
+export async function resetAssessmentRun(assessmentId){
+  requireAssessmentCloud();
+  const base=["publicCourses",activeProjectId,"assessments",String(assessmentId)];
+  const [attempts,sessions]=await Promise.all([
+    firebase.fsMod.getDocs(firebase.fsMod.collection(db,...base,"attempts")),
+    firebase.fsMod.getDocs(firebase.fsMod.collection(db,...base,"sessions"))
+  ]);
+  const docs=[...attempts.docs,...sessions.docs];
+  for(let i=0;i<docs.length;i+=400){
+    const batch=firebase.fsMod.writeBatch(db);
+    docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));
+    await batch.commit();
+  }
+  return attempts.size;
 }
 
 export async function archiveProject(projectId){

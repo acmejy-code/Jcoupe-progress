@@ -1,9 +1,21 @@
-JCOUP 수업 통합 제어 시스템 v2.2.1 검증 결과
+제이쿱 수업 통합 제어 시스템 v2.3.0 검증 결과
 
-- 기존 수업 진도/프로젝트/학생 포털 발행 기능 유지
-- 관리자 수업 자료 등록 화면에서 반별 공개 대상 선택 UI 제거
-- 자료 저장 시 targetClasses=["ALL"] 자동 저장
-- 공개 자료 발행 시 targetClasses=["ALL"] 강제
-- 기존 v2.2.0 자료도 수정/재발행 시 공통 자료로 정규화
-- Google Drive 파일 ID 추출/미리보기/다운로드 기능 유지
-- 학생 포털 v1.2.1 공통 자료실 구조와 호환
+[정적 검증]
+- 관리자 JS 전체 node --check 통과
+- HTML ID 중복 없음
+- 기존 v2.2.1 진도/달력/자료실/프로젝트 파일 유지
+- 수행평가 데이터는 기존 lessonRecords/materials와 별도 컬렉션 사용
+
+[신규 구조]
+- private students / seatLayouts / assessments
+- public assessment metadata
+- 인증 후 읽는 protected content
+- sessions / attempts
+- 10초 관리자 상태 재계산
+- 30초 학생 heartbeat
+
+[배포 전 필수]
+1. Firebase Authentication Anonymous 활성화
+2. firestore.rules 전체 교체 및 게시
+3. 관리자 v2.3.0 + 학생 포털 v1.3.0 동시 배포
+4. 테스트 학생 1~2명으로 시뮬레이션 후 실제 수행평가 사용 권장

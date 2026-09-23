@@ -1,7 +1,7 @@
 // 제이쿱 수업 통합 제어 시스템 - 기본 수업 프로젝트
 // v2.0부터 학년도·학년·과목별 수업을 "수업 프로젝트" 단위로 관리합니다.
 
-export const APP_VERSION = "2.2.1";
+export const APP_VERSION = "2.3.0";
 export const DEFAULT_PROJECT_ID = "2026-2-G2-DOKTOGUL";
 
 export const SEED_PROJECTS = [

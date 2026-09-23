@@ -3,33 +3,127 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // 관리자 원본 데이터: 로그인한 사용자는 자신의 데이터만 읽고 쓸 수 있습니다.
-    match /users/{userId}/{document=**} {
-      allow read, write: if request.auth != null
-                         && request.auth.uid == userId;
+    function signedIn() {
+      return request.auth != null;
     }
 
-    // 학생용 공개 데이터: 진도 + 수업 자료 메타데이터.
+    function courseOwner(courseId) {
+      return get(/databases/$(database)/documents/publicCourses/$(courseId)).data.ownerUid;
+    }
+
+    function isCourseOwner(courseId) {
+      return signedIn() && request.auth.uid == courseOwner(courseId);
+    }
+
+    function privateAssessment(courseId, assessmentId) {
+      return get(/databases/$(database)/documents/users/$(courseOwner(courseId))/courseProjects/$(courseId)/assessments/$(assessmentId)).data;
+    }
+
+    function privateStudent(courseId, studentId) {
+      return get(/databases/$(database)/documents/users/$(courseOwner(courseId))/courseProjects/$(courseId)/students/$(studentId)).data;
+    }
+
+    function hasValidSession(courseId, assessmentId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/sessions/$(request.auth.uid));
+    }
+
+    function sessionData(courseId, assessmentId) {
+      return get(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/sessions/$(request.auth.uid)).data;
+    }
+
+    // 관리자 원본 데이터: 로그인한 사용자는 자신의 데이터만 읽고 쓸 수 있습니다.
+    match /users/{userId}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+
+    // 학생용 공개 데이터: 진도 + 수업 자료 + 수행평가 공개 메타데이터.
     match /publicCourses/{courseId} {
       allow read: if true;
-      allow create: if request.auth != null
+      allow create: if signedIn()
                     && request.resource.data.ownerUid == request.auth.uid;
-      allow update: if request.auth != null
+      allow update: if signedIn()
                     && resource.data.ownerUid == request.auth.uid
                     && request.resource.data.ownerUid == resource.data.ownerUid;
-      allow delete: if request.auth != null
+      allow delete: if signedIn()
                     && resource.data.ownerUid == request.auth.uid;
 
       match /classes/{classId} {
         allow read: if true;
-        allow create, update, delete: if request.auth != null
-          && getAfter(/databases/$(database)/documents/publicCourses/$(courseId)).data.ownerUid == request.auth.uid;
+        allow create, update, delete: if isCourseOwner(courseId);
       }
 
       match /materials/{materialId} {
         allow read: if true;
-        allow create, update, delete: if request.auth != null
-          && getAfter(/databases/$(database)/documents/publicCourses/$(courseId)).data.ownerUid == request.auth.uid;
+        allow create, update, delete: if isCourseOwner(courseId);
+      }
+
+      // 수행평가 목록에는 제목·상태·대상 반 등 공개 메타데이터만 둡니다.
+      match /assessments/{assessmentId} {
+        allow read: if true;
+        allow create, update, delete: if isCourseOwner(courseId);
+
+        // 문항 본문은 응시코드 검증을 통과해 세션이 만들어진 학생만 읽습니다.
+        match /content/{contentId} {
+          allow read: if isCourseOwner(courseId) || hasValidSession(courseId, assessmentId);
+          allow create, update, delete: if isCourseOwner(courseId);
+        }
+
+        // 학생의 익명 Firebase 계정별 인증 세션.
+        match /sessions/{sessionId} {
+          allow read: if isCourseOwner(courseId)
+                      || (signedIn() && sessionId == request.auth.uid);
+
+          allow create: if signedIn()
+                        && sessionId == request.auth.uid
+                        && request.resource.data.authUid == request.auth.uid
+                        && request.resource.data.studentId is string
+                        && request.resource.data.studentName is string
+                        && request.resource.data.nameKey is string
+                        && request.resource.data.accessCodeProof is string
+                        && privateAssessment(courseId, assessmentId).status == 'OPEN'
+                        && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode
+                        && request.resource.data.nameKey == privateStudent(courseId, request.resource.data.studentId).nameKey
+                        && privateAssessment(courseId, assessmentId).targetClasses.hasAny([
+                             privateStudent(courseId, request.resource.data.studentId).className
+                           ]);
+
+          allow update: if isCourseOwner(courseId)
+                        || (signedIn()
+                            && sessionId == request.auth.uid
+                            && resource.data.authUid == request.auth.uid
+                            && request.resource.data.authUid == resource.data.authUid
+                            && request.resource.data.studentId == resource.data.studentId
+                            && request.resource.data.nameKey == resource.data.nameKey
+                            && request.resource.data.accessCodeProof == resource.data.accessCodeProof);
+
+          allow delete: if isCourseOwner(courseId)
+                        || (signedIn() && sessionId == request.auth.uid);
+        }
+
+        // 실제 답안. 교사는 전체를 읽고, 학생은 검증된 자기 세션의 학번 문서만 읽고 씁니다.
+        match /attempts/{studentId} {
+          allow read: if isCourseOwner(courseId)
+                      || (hasValidSession(courseId, assessmentId)
+                          && sessionData(courseId, assessmentId).studentId == studentId);
+
+          allow create: if isCourseOwner(courseId)
+                        || (hasValidSession(courseId, assessmentId)
+                            && sessionData(courseId, assessmentId).studentId == studentId
+                            && request.resource.data.studentId == studentId
+                            && request.resource.data.authUid == request.auth.uid
+                            && request.resource.data.status == 'IN_PROGRESS');
+
+          allow update: if isCourseOwner(courseId)
+                        || (hasValidSession(courseId, assessmentId)
+                            && sessionData(courseId, assessmentId).studentId == studentId
+                            && resource.data.status != 'SUBMITTED'
+                            && request.resource.data.studentId == resource.data.studentId
+                            && request.resource.data.authUid == request.auth.uid
+                            && request.resource.data.status in ['IN_PROGRESS', 'SUBMITTED']);
+
+          allow delete: if isCourseOwner(courseId);
+        }
       }
     }
   }
