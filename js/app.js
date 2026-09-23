@@ -710,20 +710,61 @@ function parseRosterText(text){
   });
   return normalizeRosterRows(rows);
 }
+function rosterHeaderKey(value){
+  return String(value??"").replace(/^\uFEFF/,"").replace(/[\s·._()\-\/]/g,"").toLowerCase();
+}
+function findRosterHeader(rows){
+  const limit=Math.min(rows.length,30);
+  let best=null;
+  for(let r=0;r<limit;r++){
+    const keys=(rows[r]||[]).map(rosterHeaderKey);
+    const find=(aliases)=>keys.findIndex(v=>aliases.includes(v));
+    const idCol=find(["학번","학생학번","studentid","studentno","studentnumber"]);
+    const nameCol=find(["이름","성명","학생명","학생이름","name","studentname"]);
+    const gradeCol=find(["학년","grade"]);
+    const classCol=find(["반","학급","class","classno"]);
+    const numberCol=find(["번호","번","출석번호","studentnumberinclass","no"]);
+    let score=0;
+    if(idCol>=0) score+=5;
+    if(nameCol>=0) score+=5;
+    if(gradeCol>=0) score+=2;
+    if(classCol>=0) score+=2;
+    if(numberCol>=0) score+=2;
+    if(nameCol>=0 && (idCol>=0 || (gradeCol>=0&&classCol>=0&&numberCol>=0))) score+=10;
+    if(!best || score>best.score) best={rowIndex:r,idCol,nameCol,gradeCol,classCol,numberCol,score};
+  }
+  return best;
+}
+function digitsOnly(value){return String(value??"").trim().replace(/\.0$/,"").replace(/[^0-9]/g,"");}
+function buildFiveDigitStudentId(gradeValue,classValue,numberValue){
+  const grade=digitsOnly(gradeValue), cls=digitsOnly(classValue), no=digitsOnly(numberValue);
+  if(!grade||!cls||!no) return "";
+  const g=String(Number(grade));
+  if(!/^\d$/.test(g)) return "";
+  const c=String(Number(cls)).padStart(2,"0"), n=String(Number(no)).padStart(2,"0");
+  if(!/^\d{2}$/.test(c)||!/^\d{2}$/.test(n)) return "";
+  return `${g}${c}${n}`;
+}
 function rosterMatrixToRows(matrix){
   const rows=Array.isArray(matrix)?matrix:[];
   if(!rows.length) return [];
   const normalized=rows.map(r=>Array.isArray(r)?r.map(v=>String(v??"").trim()):[]);
-  let idCol=0,nameCol=1,start=0;
-  const header=normalized[0].map(v=>v.replace(/\s+/g,"").toLowerCase());
-  const foundId=header.findIndex(v=>v==="학번"||v==="studentid"||v==="studentno"||v==="studentnumber");
-  const foundName=header.findIndex(v=>v==="이름"||v==="성명"||v==="name"||v==="studentname");
-  if(foundId>=0 && foundName>=0){idCol=foundId;nameCol=foundName;start=1;}
+  const headerInfo=findRosterHeader(normalized);
+  if(!headerInfo || headerInfo.score<15 || headerInfo.nameCol<0 || (headerInfo.idCol<0 && !(headerInfo.gradeCol>=0&&headerInfo.classCol>=0&&headerInfo.numberCol>=0))){
+    throw new Error("명단의 머리글을 찾지 못했습니다. 파일 안에 '이름'과 '학번' 열 또는 '학년·반·번호·이름' 열이 있는지 확인해 주세요.");
+  }
+  const {rowIndex,idCol,nameCol,gradeCol,classCol,numberCol}=headerInfo;
   const out=[];
-  for(let i=start;i<normalized.length;i++){
+  for(let i=rowIndex+1;i<normalized.length;i++){
     const row=normalized[i];
-    const studentId=String(row[idCol]??"").trim().replace(/\.0$/,""), name=String(row[nameCol]??"").trim();
+    const name=String(row[nameCol]??"").trim();
+    let studentId=idCol>=0?digitsOnly(row[idCol]):"";
+    if(!isValidStudentId(studentId) && gradeCol>=0 && classCol>=0 && numberCol>=0){
+      studentId=buildFiveDigitStudentId(row[gradeCol],row[classCol],row[numberCol]);
+    }
     if(!studentId&&!name) continue;
+    // 제목·합계·비고처럼 학생행이 아닌 행은 학번이 없으면 건너뜁니다.
+    if(!studentId && name) continue;
     out.push({studentId,name});
   }
   return normalizeRosterRows(out);
