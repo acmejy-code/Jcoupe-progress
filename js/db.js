@@ -731,12 +731,15 @@ export async function replaceStudentsForClass(className,students){
   return normalized.length;
 }
 
-export async function saveSeatLayout(className,columns,orderedStudentIds){
+export async function saveSeatLayout(className,columns,orderedStudentIds,slots=null){
   requireAssessmentCloud();
   const cls=String(className||"").trim();
+  const safeColumns=Math.min(8,Math.max(2,Number(columns||5)));
+  const safeOrdered=(orderedStudentIds||[]).filter(Boolean).map(String);
+  const safeSlots=Array.isArray(slots)?slots.map(v=>v?String(v):null):safeOrdered.slice();
   await firebase.fsMod.setDoc(
     firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"seatLayouts",cls),
-    {className:cls,columns:Math.min(8,Math.max(2,Number(columns||5))),orderedStudentIds:(orderedStudentIds||[]).map(String),updatedAt:new Date().toISOString()},
+    {className:cls,columns:safeColumns,orderedStudentIds:safeOrdered,slots:safeSlots,updatedAt:new Date().toISOString()},
     {merge:true}
   );
 }

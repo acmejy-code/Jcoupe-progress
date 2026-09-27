@@ -243,34 +243,99 @@
   </form>
 </dialog>
 
-<dialog id="rosterDialog" class="wide-dialog">
+<dialog id="rosterDialog" class="wide-dialog roster-wide-dialog">
   <div class="modal-head">
     <div>
       <strong>학생 명단 · 좌석 배치</strong>
-      <div class="small muted">초기 배치는 학번 오름차순으로 생성되며, 저장 후 좌석 카드를 드래그하여 실제 교실 배열과 맞출 수 있습니다.</div>
+      <div class="small muted">명단을 불러온 뒤 실제 교실 책상 배열과 같게 좌석을 직접 저장할 수 있습니다.</div>
     </div>
     <button class="icon-btn" id="closeRosterDialog">✕</button>
   </div>
-  <div class="modal-body roster-modal-body">
+
+  <div class="roster-top-controls">
     <div class="field"><label>반</label><select id="rosterClass"></select></div>
     <div class="field"><label>한 줄 좌석 수</label><select id="rosterColumns"><option>4</option><option selected>5</option><option>6</option><option>7</option><option>8</option></select></div>
-    <div class="field full">
-      <label>학생 명단 파일 불러오기</label>
-      <input id="rosterFile" type="file" accept=".xlsx,.xls,.csv,.tsv,.txt">
-      <div class="small muted" id="rosterFileStatus">Excel(.xlsx/.xls), CSV, TSV, TXT 파일을 불러올 수 있습니다. 위쪽에 교시·학급 정보가 있어도 '학번/이름' 또는 '학년/반/번호/이름' 머리글 행을 자동으로 찾아 인식합니다.</div>
-    </div>
-    <div class="field full"><label>학생 명단 붙여넣기 · 확인</label><textarea id="rosterText" class="roster-text" placeholder="학번 이름
+  </div>
+
+  <div class="roster-tabs">
+    <button type="button" class="roster-tab active" data-roster-tab="list">명단 관리</button>
+    <button type="button" class="roster-tab" data-roster-tab="seat">좌석 배치</button>
+  </div>
+
+  <div id="rosterTab-list" class="roster-tab-panel active">
+    <div class="modal-body roster-modal-body">
+      <div class="field full">
+        <label>학생 명단 파일 불러오기</label>
+        <input id="rosterFile" type="file" accept=".xlsx,.xls,.csv,.tsv,.txt">
+        <div class="small muted" id="rosterFileStatus">Excel(.xlsx/.xls), CSV, TSV, TXT 파일을 불러올 수 있습니다. 위쪽에 교시·학급 정보가 있어도 '학번/이름' 또는 '학년/반/번호/이름' 머리글 행을 자동으로 찾아 인식합니다.</div>
+      </div>
+      <div class="field full"><label>학생 명단 붙여넣기 · 확인</label><textarea id="rosterText" class="roster-text" placeholder="학번 이름
 20101 홍길동
 20102 김민수
 
 4자리·5자리 학번을 모두 지원합니다.
 쉼표·탭·공백으로 구분해도 됩니다."></textarea></div>
-    <div class="field full"><div class="small muted">※ [명단 적용]은 선택 반의 기존 명단을 교체합니다. 좌석은 학번 오름차순으로 다시 생성됩니다.</div></div>
+      <div class="field full"><div class="small muted">※ [명단 적용]은 선택 반의 기존 명단을 교체하고 학번 오름차순의 기본 좌석을 만듭니다. 적용 후 바로 [좌석 배치] 탭에서 실제 교실 배열을 저장할 수 있습니다.</div></div>
+    </div>
+    <div class="modal-foot">
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="cancelRosterBtn">닫기</button>
+      <button type="button" class="btn primary" id="applyRosterBtn">명단 적용</button>
+    </div>
+  </div>
+
+  <div id="rosterTab-seat" class="roster-tab-panel">
+    <div class="seat-editor-wrap">
+      <div class="seat-editor-guide">
+        <div>
+          <b id="seatEditorTitle">좌석 배치</b>
+          <div class="small muted">학생 카드를 드래그해 실제 자리에 맞추세요. 빈 자리는 저장되며 수행평가 실시간 감독 화면에도 그대로 표시됩니다.</div>
+        </div>
+        <div class="seat-editor-actions">
+          <button type="button" class="btn small-btn" id="seatResetBtn">학번순 초기배치</button>
+          <button type="button" class="btn small-btn" id="seatAddBlankBtn">＋ 빈 자리</button>
+          <button type="button" class="btn small-btn" id="seatAddRowBtn">＋ 빈 행</button>
+          <button type="button" class="btn small-btn" id="seatTrimBlanksBtn">끝 빈칸 정리</button>
+        </div>
+      </div>
+      <div class="front-label seat-editor-front">칠판 · 교탁 (교실 앞)</div>
+      <div id="seatEditorGrid" class="seat-grid seat-editor-grid"></div>
+      <div class="seat-editor-legend small muted">빈 자리의 ×를 누르면 해당 빈칸만 삭제할 수 있습니다. 학생 카드를 빈 자리 위로 끌어 놓으면 서로 자리가 바뀝니다.</div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" id="backToRosterListBtn">← 명단 관리</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="closeSeatEditorBtn">닫기</button>
+      <button type="button" class="btn primary" id="saveSeatLayoutBtn">좌석 배치 저장</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="studentTestDialog" class="wide-dialog student-test-dialog">
+  <div class="modal-head">
+    <div>
+      <strong>학생 화면 테스트</strong>
+      <div class="small muted">선택한 학생의 실제 학생 포털 화면을 새 창으로 엽니다. 관리자 화면과 로그인 상태는 그대로 유지되며, 테스트 답안은 서버에 저장되지 않습니다.</div>
+    </div>
+    <button class="icon-btn" id="closeStudentTestDialog">✕</button>
+  </div>
+  <div class="modal-body">
+    <div class="field full"><label>수행평가</label><select id="testAssessmentSelect"></select></div>
+    <div class="field"><label>반</label><select id="testClassSelect"></select></div>
+    <div class="field"><label>테스트 학생</label><select id="testStudentSelect"></select></div>
+    <div class="field full"><label>시작 화면</label>
+      <select id="testStartAt">
+        <option value="list">학생 포털의 수행평가 목록부터</option>
+        <option value="login">학번·이름·응시코드 인증 화면부터</option>
+        <option value="exam">문항 응시 화면부터</option>
+      </select>
+    </div>
+    <div class="field full"><div class="student-test-note">버튼을 누르면 별도의 학생 테스트 창이 열립니다. 관리자 창은 그대로 두고 두 화면을 나란히 확인할 수 있으며, 테스트 창에서 작성·제출한 내용은 실제 학생 답안이나 감독 현황에 저장되지 않습니다.</div></div>
   </div>
   <div class="modal-foot">
     <span class="spacer"></span>
-    <button type="button" class="btn" id="cancelRosterBtn">닫기</button>
-    <button type="button" class="btn primary" id="applyRosterBtn">명단 적용</button>
+    <button type="button" class="btn" id="cancelStudentTestBtn">취소</button>
+    <button type="button" class="btn primary" id="startStudentTestBtn">새 창에서 테스트 학생 열기</button>
   </div>
 </dialog>
 

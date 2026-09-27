@@ -41,6 +41,10 @@ let selectedMonitorClass="";
 let assessmentAttempts=[];
 let editingAssessmentId=null;
 let draggedStudentId=null;
+let seatEditorSlots=[];
+let seatEditorDragIndex=null;
+let previewPayload=null;
+let previewWindow=null;
 
 function toast(msg){
   $("toast").textContent=msg;
@@ -630,11 +634,21 @@ function openStudentPortal(){
 function nameKey(v){return String(v||"").replace(/\s+/g,"").trim();}
 function classStudents(cls){return students.filter(s=>String(s.className)===String(cls)).sort((a,b)=>String(a.studentId).localeCompare(String(b.studentId),"ko",{numeric:true}));}
 function getSeatLayout(cls){return seatLayouts.find(x=>String(x.className||x.id)===String(cls))||null;}
+function layoutSlotsForClass(cls){
+  const rows=classStudents(cls), layout=getSeatLayout(cls), valid=new Set(rows.map(s=>String(s.studentId)));
+  const source=Array.isArray(layout?.slots)&&layout.slots.length?layout.slots:(layout?.orderedStudentIds||[]);
+  const slots=[], used=new Set();
+  source.forEach(v=>{
+    if(v===null||v===undefined||v===""){slots.push(null);return;}
+    const id=String(v);
+    if(valid.has(id)&&!used.has(id)){slots.push(id);used.add(id);}
+  });
+  rows.forEach(s=>{const id=String(s.studentId);if(!used.has(id)){slots.push(id);used.add(id);}});
+  return slots;
+}
 function orderedStudents(cls){
-  const rows=classStudents(cls), layout=getSeatLayout(cls), map=new Map(rows.map(s=>[String(s.studentId),s]));
-  const ordered=[];
-  (layout?.orderedStudentIds||[]).forEach(id=>{if(map.has(String(id))){ordered.push(map.get(String(id)));map.delete(String(id));}});
-  return ordered.concat([...map.values()].sort((a,b)=>String(a.studentId).localeCompare(String(b.studentId),"ko",{numeric:true})));
+  const map=new Map(classStudents(cls).map(s=>[String(s.studentId),s]));
+  return layoutSlotsForClass(cls).filter(Boolean).map(id=>map.get(String(id))).filter(Boolean);
 }
 function statusInfo(studentId){
   const a=assessmentAttempts.find(x=>String(x.studentId||x.id)===String(studentId));
@@ -675,12 +689,62 @@ async function saveAssessmentForm(e){
     selectedAssessmentId=saved.id;$("assessmentDialog").close();toast("수행평가를 저장했습니다.");
   }catch(err){alert("수행평가 저장 실패: "+err.message);}
 }
+function setRosterTab(name){
+  document.querySelectorAll("[data-roster-tab]").forEach(b=>b.classList.toggle("active",b.dataset.rosterTab===name));
+  ["list","seat"].forEach(k=>$("rosterTab-"+k)?.classList.toggle("active",k===name));
+  if(name==="seat")renderSeatEditor();
+}
 function openRosterDialog(){
   if(storageMode()!=="cloud"){alert("학생 명단은 Google 로그인 후 관리할 수 있습니다.");return;}
   $("rosterClass").innerHTML=projectClasses().map(c=>`<option value="${esc(c)}">${esc(c)}반</option>`).join("");
-  $("rosterClass").value=selectedMonitorClass||projectClasses()[0]||"";loadRosterDialogText();$("rosterDialog").showModal();
+  $("rosterClass").value=selectedMonitorClass||projectClasses()[0]||"";
+  loadRosterDialogText();setRosterTab("list");$("rosterDialog").showModal();
 }
-function loadRosterDialogText(){const cls=$("rosterClass").value, layout=getSeatLayout(cls);$("rosterColumns").value=String(layout?.columns||5);$("rosterText").value=classStudents(cls).map(s=>`${s.studentId}\t${s.name}`).join("\n");}
+function loadRosterDialogText(){
+  const cls=$("rosterClass").value, layout=getSeatLayout(cls);
+  $("rosterColumns").value=String(layout?.columns||5);
+  $("rosterText").value=classStudents(cls).map(s=>`${s.studentId}\t${s.name}`).join("\n");
+  seatEditorSlots=layoutSlotsForClass(cls);
+  renderSeatEditor();
+}
+function resetSeatEditorSlots(){
+  seatEditorSlots=classStudents($("rosterClass").value).map(s=>String(s.studentId));
+  renderSeatEditor();
+}
+function renderSeatEditor(){
+  const grid=$("seatEditorGrid");if(!grid)return;
+  const cls=$("rosterClass").value, cols=Number($("rosterColumns").value||5), rows=classStudents(cls);
+  const studentMap=new Map(rows.map(s=>[String(s.studentId),s]));
+  const valid=new Set(rows.map(s=>String(s.studentId))), used=new Set();
+  seatEditorSlots=(seatEditorSlots||[]).map(v=>v?String(v):null).filter(v=>!v||valid.has(v));
+  seatEditorSlots=seatEditorSlots.map(v=>{if(!v)return null;if(used.has(v))return null;used.add(v);return v;});
+  rows.forEach(st=>{const id=String(st.studentId);if(!used.has(id)){seatEditorSlots.push(id);used.add(id);}});
+  $("seatEditorTitle").textContent=`${cls}반 좌석 배치 · ${rows.length}명`;
+  grid.style.gridTemplateColumns=`repeat(${cols},minmax(0,1fr))`;
+  if(!seatEditorSlots.length){grid.innerHTML='<div class="assessment-empty">먼저 학생 명단을 등록해 주세요.</div>';return;}
+  grid.innerHTML=seatEditorSlots.map((id,index)=>{
+    if(!id)return `<div class="seat-editor-slot empty" data-seat-index="${index}"><span>빈 자리</span><button type="button" class="seat-empty-remove" data-remove-empty="${index}" title="빈 자리 삭제">×</button></div>`;
+    const st=studentMap.get(String(id));
+    return `<div class="seat-editor-slot" data-seat-index="${index}"><div class="seat-card status-none" draggable="true" data-seat-drag-index="${index}"><div class="seat-id">${esc(st?.studentId||id)}</div><strong>${esc(st?.name||"")}</strong><span>좌석 이동</span><small class="seat-position">${index+1}번째 칸</small></div></div>`;
+  }).join("");
+  grid.querySelectorAll("[data-seat-index]").forEach(slot=>{
+    slot.ondragover=e=>{e.preventDefault();slot.classList.add("drag-over")};
+    slot.ondragleave=()=>slot.classList.remove("drag-over");
+    slot.ondrop=e=>{e.preventDefault();slot.classList.remove("drag-over");const to=Number(slot.dataset.seatIndex);if(seatEditorDragIndex===null||Number.isNaN(to)||to===seatEditorDragIndex)return;const tmp=seatEditorSlots[to]??null;seatEditorSlots[to]=seatEditorSlots[seatEditorDragIndex]??null;seatEditorSlots[seatEditorDragIndex]=tmp;seatEditorDragIndex=null;renderSeatEditor();};
+  });
+  grid.querySelectorAll("[data-seat-drag-index]").forEach(card=>{
+    card.ondragstart=()=>{seatEditorDragIndex=Number(card.dataset.seatDragIndex);card.classList.add("dragging")};
+    card.ondragend=()=>{seatEditorDragIndex=null;card.classList.remove("dragging")};
+  });
+  grid.querySelectorAll("[data-remove-empty]").forEach(btn=>btn.onclick=e=>{e.stopPropagation();seatEditorSlots.splice(Number(btn.dataset.removeEmpty),1);renderSeatEditor();});
+}
+async function saveSeatEditor(){
+  const cls=$("rosterClass").value,cols=Number($("rosterColumns").value||5);
+  const ids=seatEditorSlots.filter(Boolean);
+  const rosterIds=classStudents(cls).map(s=>String(s.studentId));
+  if(ids.length!==rosterIds.length||new Set(ids).size!==rosterIds.length){alert("좌석에 모든 학생이 정확히 한 번씩 배치되어야 합니다.");return;}
+  try{await saveSeatLayout(cls,cols,ids,seatEditorSlots);selectedMonitorClass=cls;toast(`${cls}반 좌석 배치를 저장했습니다.`);renderAssessmentMonitor();}catch(err){alert(err.message);}
+}
 function isValidStudentId(value){return /^\d{4,5}$/.test(String(value||"").trim());}
 function normalizeRosterRows(rows){
   const cleaned=(rows||[]).map((r,index)=>({
@@ -804,7 +868,15 @@ async function applyRoster(){
   let rows; try{rows=parseRosterText($("rosterText").value);}catch(err){alert(err.message);return;}
   const cls=$("rosterClass").value;if(!rows.length){alert("학생 명단을 입력해 주세요.");return;}
   if(!confirm(`${cls}반 명단을 ${rows.length}명으로 교체할까요?\n좌석은 학번 오름차순으로 다시 배치됩니다.`))return;
-  try{await replaceStudentsForClass(cls,rows);await saveSeatLayout(cls,Number($("rosterColumns").value||5),rows.map(x=>x.studentId));selectedMonitorClass=cls;$("rosterDialog").close();toast(`${cls}반 ${rows.length}명 명단을 적용했습니다.`);}catch(err){alert(err.message);}
+  try{
+    await replaceStudentsForClass(cls,rows);
+    const cols=Number($("rosterColumns").value||5);
+    await saveSeatLayout(cls,cols,rows.map(x=>x.studentId),rows.map(x=>x.studentId));
+    students=students.filter(s=>String(s.className)!==String(cls)).concat(rows.map((r,i)=>({...r,className:cls,seatOrder:i+1})));
+    seatEditorSlots=rows.map(x=>String(x.studentId));selectedMonitorClass=cls;
+    toast(`${cls}반 ${rows.length}명 명단을 적용했습니다. 이제 실제 좌석을 배치하세요.`);
+    setRosterTab("seat");renderAssessments();
+  }catch(err){alert(err.message);}
 }
 function startAttemptWatch(){
   if(storageMode()!=="cloud"||!selectedAssessmentId){assessmentAttempts=[];return;}
@@ -813,12 +885,15 @@ function startAttemptWatch(){
 function renderAssessmentMonitor(){
   const root=$("assessmentMonitor");if(!root)return;const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a){root.innerHTML="";return;}
   const cls=selectedMonitorClass||a.targetClasses?.[0]||projectClasses()[0]||"";selectedMonitorClass=cls;
-  const rows=orderedStudents(cls),layout=getSeatLayout(cls),cols=Number(layout?.columns||5);
+  const layout=getSeatLayout(cls),cols=Number(layout?.columns||5),slots=layoutSlotsForClass(cls),studentMap=new Map(classStudents(cls).map(s=>[String(s.studentId),s]));
+  const rows=slots.filter(Boolean).map(id=>studentMap.get(String(id))).filter(Boolean);
   const statuses=rows.map(s=>statusInfo(s.studentId));
   const count=k=>statuses.filter(x=>x.key===k).length;
-  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">Firestore 상태 변경은 즉시 반영 · 화면 상태는 10초마다 재계산 · 학생 접속 신호는 30초 간격</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>제출 ${count("SUBMITTED")}</span><span>연결이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${rows.map(s=>{const st=statusInfo(s.studentId);return `<div class="seat-card status-${st.key.toLowerCase()}" draggable="true" data-seat-student="${esc(s.studentId)}"><div class="seat-id">${esc(s.studentId)}</div><strong>${esc(s.name)}</strong><span>${st.label}</span><small>${esc(st.sub)}</small></div>`;}).join("")}</div><div class="seat-tools"><span class="small muted">실제 책상 배열과 다르면 카드를 드래그해서 이동한 뒤 저장하세요.</span><button class="btn small-btn" id="saveSeatOrderBtn">좌석 순서 저장</button></div>`;
-  root.querySelectorAll("[data-seat-student]").forEach(card=>{card.ondragstart=()=>{draggedStudentId=card.dataset.seatStudent};card.ondragover=e=>e.preventDefault();card.ondrop=e=>{e.preventDefault();const target=card.dataset.seatStudent;if(!draggedStudentId||draggedStudentId===target)return;const grid=card.parentElement,cards=[...grid.children],from=cards.find(x=>x.dataset.seatStudent===draggedStudentId);if(from)grid.insertBefore(from,card);};});
-  $("saveSeatOrderBtn").onclick=async()=>{const ids=[...root.querySelectorAll("[data-seat-student]")].map(x=>x.dataset.seatStudent);try{await saveSeatLayout(cls,cols,ids);toast("좌석 배치를 저장했습니다.");}catch(err){alert(err.message);}};
+  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">저장한 실제 교실 좌석(빈 자리 포함)을 그대로 표시 · Firestore 상태 변경 즉시 반영 · 화면 상태 10초마다 재계산</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>제출 ${count("SUBMITTED")}</span><span>연결이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${slots.map((id,index)=>{if(!id)return `<div class="seat-empty-monitor" data-monitor-slot="${index}">빈 자리</div>`;const s=studentMap.get(String(id));if(!s)return `<div class="seat-empty-monitor">빈 자리</div>`;const st=statusInfo(s.studentId);return `<div class="seat-card status-${st.key.toLowerCase()}" draggable="true" data-seat-student="${esc(s.studentId)}" data-monitor-slot="${index}"><div class="seat-id">${esc(s.studentId)}</div><strong>${esc(s.name)}</strong><span>${st.label}</span><small>${esc(st.sub)}</small></div>`;}).join("")}</div><div class="seat-tools"><span class="small muted">좌석 수정은 [학생 명단·좌석] → [좌석 배치]에서 하는 것을 권장합니다. 이 화면에서도 학생 카드를 드래그하여 임시 조정 후 저장할 수 있습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
+  let dragIndex=null;const grid=root.querySelector(".seat-grid");
+  root.querySelectorAll("[data-monitor-slot]").forEach(slot=>{slot.ondragover=e=>e.preventDefault();slot.ondrop=e=>{e.preventDefault();const to=Number(slot.dataset.monitorSlot);if(dragIndex===null||to===dragIndex)return;const tmp=slots[to]??null;slots[to]=slots[dragIndex]??null;slots[dragIndex]=tmp;dragIndex=null;const ids=slots.filter(Boolean);saveSeatLayout(cls,cols,ids,slots).then(()=>toast("좌석 위치를 저장했습니다.")).catch(err=>alert(err.message));};});
+  root.querySelectorAll("[data-seat-student]").forEach(card=>{card.ondragstart=()=>{dragIndex=Number(card.dataset.monitorSlot);draggedStudentId=card.dataset.seatStudent};card.ondragend=()=>{dragIndex=null;draggedStudentId=null};});
+  $("saveSeatOrderBtn").onclick=async()=>{try{const current=layoutSlotsForClass(cls);await saveSeatLayout(cls,cols,current.filter(Boolean),current);toast("좌석 배치를 저장했습니다.");}catch(err){alert(err.message);}};
 }
 function downloadAssessmentCsv(){
   const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a)return;const rosterMap=new Map(students.map(s=>[String(s.studentId),s]));
@@ -827,13 +902,80 @@ function downloadAssessmentCsv(){
   const rows=assessmentAttempts.map(at=>{const st=rosterMap.get(String(at.studentId))||{};return [at.studentId,st.name||at.studentName||"",st.className||"",at.status||"",fmtDateTime(at.startedAt),fmtDateTime(at.submittedAt),...qs.map(q=>at.answers?.[q.id]||"")];});
   const csv="\ufeff"+[headers,...rows].map(r=>r.map(quote).join(",")).join("\r\n");const blob=new Blob([csv],{type:"text/csv;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`${a.title||"수행평가"}_응답.csv`;link.click();URL.revokeObjectURL(url);
 }
+function refreshStudentTestSelectors(){
+  const aId=$("testAssessmentSelect").value||selectedAssessmentId||assessments[0]?.id||"";
+  $("testAssessmentSelect").innerHTML=assessments.map(a=>`<option value="${esc(a.id)}" ${a.id===aId?"selected":""}>${esc(a.title)} (${assessmentStatusLabel(a.status)})</option>`).join("");
+  const a=assessments.find(x=>x.id===$("testAssessmentSelect").value)||assessments.find(x=>x.id===aId)||null;
+  const target=a?.targetClasses?.length?a.targetClasses:projectClasses();
+  let cls=$("testClassSelect").value; if(!target.includes(cls))cls=target[0]||"";
+  $("testClassSelect").innerHTML=target.map(c=>`<option value="${esc(c)}" ${c===cls?"selected":""}>${esc(c)}반</option>`).join("");
+  const rows=classStudents(cls);
+  const current=$("testStudentSelect").value;
+  $("testStudentSelect").innerHTML=rows.map(st=>`<option value="${esc(st.studentId)}" ${String(st.studentId)===String(current)?"selected":""}>${esc(st.studentId)} · ${esc(st.name)}</option>`).join("");
+}
+function openStudentTestDialog(){
+  if(storageMode()!=="cloud"){alert("학생 화면 테스트는 Google 로그인 후 사용할 수 있습니다.");return;}
+  if(!assessments.length){alert("먼저 수행평가를 만들어 주세요.");return;}
+  $("testAssessmentSelect").innerHTML=assessments.map(a=>`<option value="${esc(a.id)}">${esc(a.title)}</option>`).join("");
+  $("testAssessmentSelect").value=selectedAssessmentId||assessments[0].id;
+  refreshStudentTestSelectors();
+  $("testStartAt").value="list";
+  $("studentTestDialog").showModal();
+}
+function buildStudentPreviewPayload(){
+  const a=assessments.find(x=>x.id===$("testAssessmentSelect").value);
+  const cls=$("testClassSelect").value,studentId=$("testStudentSelect").value,st=classStudents(cls).find(x=>String(x.studentId)===String(studentId));
+  if(!a)throw new Error("테스트할 수행평가를 선택해 주세요.");
+  if(!st)throw new Error("테스트할 학생을 선택해 주세요.");
+  return {
+    type:"JCOUP_ADMIN_PREVIEW",
+    payload:{
+      projectId:activeProject.id,
+      previewRun:makeId(),
+      startAt:$("testStartAt").value||"list",
+      assessment:{...a,status:"OPEN",questionCount:a.questions?.length||0},
+      student:{studentId:String(st.studentId),name:String(st.name),className:String(cls)}
+    }
+  };
+}
+function sendPreviewPayload(){
+  if(!previewPayload||!previewWindow||previewWindow.closed)return;
+  try{previewWindow.postMessage(previewPayload,location.origin);}catch(err){console.warn("학생 테스트 데이터 전송 실패",err);}
+}
+function startStudentPreview(){
+  try{previewPayload=buildStudentPreviewPayload();}catch(err){alert(err.message);return;}
+  const p=previewPayload.payload,a=p.assessment,st=p.student;
+  const url=`${studentPortalUrl(activeProject.id)}&adminPreview=1&previewRun=${encodeURIComponent(p.previewRun)}&v=${encodeURIComponent(APP_VERSION)}`;
+  const features="popup=yes,width=1180,height=860,resizable=yes,scrollbars=yes";
+  previewWindow=window.open(url,"JCOUP_STUDENT_TEST",features);
+  if(!previewWindow){
+    alert("학생 테스트 창을 열 수 없습니다. 브라우저의 팝업 차단을 해제한 뒤 다시 시도해 주세요.");
+    return;
+  }
+  $("studentTestDialog").close();
+  try{previewWindow.focus();}catch{}
+  toast(`${st.className}반 ${st.studentId} ${st.name} 학생 테스트 창을 열었습니다.`);
+  let tries=0;
+  const timer=setInterval(()=>{
+    tries+=1;
+    if(!previewWindow||previewWindow.closed||tries>24){clearInterval(timer);return;}
+    sendPreviewPayload();
+  },250);
+}
+window.addEventListener("message",e=>{
+  if(e.origin!==location.origin)return;
+  if(e.data?.type!=="JCOUP_PREVIEW_READY")return;
+  if(previewWindow&&e.source!==previewWindow)return;
+  sendPreviewPayload();
+});
+
 function renderAssessments(){
   const root=$("view-assessments");if(!activeProject)return;
   if(storageMode()!=="cloud"){root.innerHTML=`<div class="card assessment-empty"><h2>수행평가 응시 관리</h2><p>학생 인증·실시간 감독·답안 수집은 Firestore를 사용하므로 Google 로그인 후 사용할 수 있습니다.</p></div>`;return;}
   if(!selectedAssessmentId||!assessments.some(a=>a.id===selectedAssessmentId))selectedAssessmentId=assessments[0]?.id||null;
   const selected=assessments.find(a=>a.id===selectedAssessmentId)||null;if(!selectedMonitorClass)selectedMonitorClass=selected?.targetClasses?.[0]||projectClasses()[0]||"";
-  root.innerHTML=`<div class="assessment-toolbar"><div><h2>수행평가 응시 관리</h2><div class="small muted">학생은 포털에서 학번·이름·응시코드로 입장합니다. 답안은 실시간으로 수집됩니다.</div></div><div class="assessment-actions"><button class="btn" id="manageRosterBtn">학생 명단·좌석</button><button class="btn primary" id="newAssessmentBtn">＋ 수행평가 만들기</button></div></div><div class="assessment-layout"><div class="assessment-list-panel card"><h3>평가 목록</h3><div class="assessment-list">${assessments.length?assessments.map(a=>`<button class="assessment-row ${a.id===selectedAssessmentId?"active":""}" data-assessment-id="${esc(a.id)}"><span><b>${esc(a.title)}</b><small>${esc((a.targetClasses||[]).join("·"))}반 · ${a.questions?.length||0}문항</small></span><em class="assessment-status ${String(a.status).toLowerCase()}">${assessmentStatusLabel(a.status)}</em></button>`).join(""):`<div class="empty">아직 만든 수행평가가 없습니다.</div>`}</div></div><div class="assessment-main">${selected?`<div class="card assessment-control"><div class="assessment-control-head"><div><div class="label">${assessmentStatusLabel(selected.status)}</div><h3>${esc(selected.title)}</h3><p>${esc(selected.description||"학생 안내 없음")}</p></div><div class="code-box"><span>응시코드</span><strong>${esc(selected.accessCode)}</strong></div></div><div class="assessment-control-actions"><button class="btn" id="editAssessmentBtn">수정</button>${selected.status!=="OPEN"?`<button class="btn success-btn" id="openAssessmentBtn">평가 시작</button>`:`<button class="btn danger" id="closeAssessmentBtn2">평가 종료</button>`}<button class="btn" id="exportAssessmentBtn">응답 CSV</button><button class="btn" id="resetAssessmentBtn">테스트 기록 초기화</button><label class="monitor-class-label">감독 반 <select id="monitorClassSelect">${(selected.targetClasses||[]).map(c=>`<option value="${esc(c)}" ${c===selectedMonitorClass?"selected":""}>${esc(c)}반</option>`).join("")}</select></label></div></div><div id="assessmentMonitor" class="card assessment-monitor"></div>`:`<div class="card assessment-empty"><b>수행평가를 만들어 주세요.</b></div>`}</div></div>`;
-  $("manageRosterBtn").onclick=openRosterDialog;$("newAssessmentBtn").onclick=()=>openAssessmentDialog();
+  root.innerHTML=`<div class="assessment-toolbar"><div><h2>수행평가 응시 관리</h2><div class="small muted">학생은 포털에서 학번·이름·응시코드로 입장합니다. 답안은 실시간으로 수집됩니다.</div></div><div class="assessment-actions"><button class="btn" id="manageRosterBtn">학생 명단·좌석</button><button class="btn" id="studentTestBtn">학생 화면 테스트</button><button class="btn primary" id="newAssessmentBtn">＋ 수행평가 만들기</button></div></div><div class="assessment-layout"><div class="assessment-list-panel card"><h3>평가 목록</h3><div class="assessment-list">${assessments.length?assessments.map(a=>`<button class="assessment-row ${a.id===selectedAssessmentId?"active":""}" data-assessment-id="${esc(a.id)}"><span><b>${esc(a.title)}</b><small>${esc((a.targetClasses||[]).join("·"))}반 · ${a.questions?.length||0}문항</small></span><em class="assessment-status ${String(a.status).toLowerCase()}">${assessmentStatusLabel(a.status)}</em></button>`).join(""):`<div class="empty">아직 만든 수행평가가 없습니다.</div>`}</div></div><div class="assessment-main">${selected?`<div class="card assessment-control"><div class="assessment-control-head"><div><div class="label">${assessmentStatusLabel(selected.status)}</div><h3>${esc(selected.title)}</h3><p>${esc(selected.description||"학생 안내 없음")}</p></div><div class="code-box"><span>응시코드</span><strong>${esc(selected.accessCode)}</strong></div></div><div class="assessment-control-actions"><button class="btn" id="editAssessmentBtn">수정</button>${selected.status!=="OPEN"?`<button class="btn success-btn" id="openAssessmentBtn">평가 시작</button>`:`<button class="btn danger" id="closeAssessmentBtn2">평가 종료</button>`}<button class="btn" id="exportAssessmentBtn">응답 CSV</button><button class="btn" id="resetAssessmentBtn">테스트 기록 초기화</button><label class="monitor-class-label">감독 반 <select id="monitorClassSelect">${(selected.targetClasses||[]).map(c=>`<option value="${esc(c)}" ${c===selectedMonitorClass?"selected":""}>${esc(c)}반</option>`).join("")}</select></label></div></div><div id="assessmentMonitor" class="card assessment-monitor"></div>`:`<div class="card assessment-empty"><b>수행평가를 만들어 주세요.</b></div>`}</div></div>`;
+  $("manageRosterBtn").onclick=openRosterDialog;$("studentTestBtn").onclick=openStudentTestDialog;$("newAssessmentBtn").onclick=()=>openAssessmentDialog();
   document.querySelectorAll("[data-assessment-id]").forEach(b=>b.onclick=()=>{selectedAssessmentId=b.dataset.assessmentId;assessmentAttempts=[];const aa=assessments.find(x=>x.id===selectedAssessmentId);selectedMonitorClass=aa?.targetClasses?.[0]||"";renderAssessments();startAttemptWatch();});
   if(selected){$("editAssessmentBtn").onclick=()=>openAssessmentDialog(selected);const openBtn=$("openAssessmentBtn");if(openBtn)openBtn.onclick=async()=>{if(confirm("이 수행평가를 학생 포털에서 응시 가능 상태로 열까요?")){await setAssessmentStatus(selected.id,"OPEN");toast("수행평가를 시작했습니다.");}};const closeBtn=$("closeAssessmentBtn2");if(closeBtn)closeBtn.onclick=async()=>{if(confirm("새로운 학생의 입장을 막고 평가를 종료할까요?\n이미 입장한 학생은 저장·제출을 계속할 수 있습니다.")){await setAssessmentStatus(selected.id,"CLOSED");toast("수행평가를 종료했습니다.");}};$("exportAssessmentBtn").onclick=downloadAssessmentCsv;$("resetAssessmentBtn").onclick=async()=>{if(confirm("이 평가의 학생 응시 기록과 인증 세션을 모두 삭제할까요?\n시험 전 시뮬레이션 기록 초기화 용도입니다.")){const n=await resetAssessmentRun(selected.id);assessmentAttempts=[];toast(`${n}개 응시 기록을 초기화했습니다.`);}};$("monitorClassSelect").onchange=e=>{selectedMonitorClass=e.target.value;renderAssessmentMonitor();};renderAssessmentMonitor();}
 }
@@ -903,7 +1045,17 @@ function bind(){
   $("closeProjectDialog").onclick=()=>$("projectDialog").close();$("cancelProjectBtn").onclick=()=>$("projectDialog").close();$("projectForm").onsubmit=saveProjectForm;
   $("closeMaterialDialog").onclick=()=>$("materialDialog").close();$("cancelMaterialBtn").onclick=()=>$("materialDialog").close();$("materialForm").onsubmit=saveMaterialForm;$("deleteMaterialBtn").onclick=deleteEditingMaterial;
   $("closeAssessmentDialog").onclick=()=>$("assessmentDialog").close();$("cancelAssessmentBtn").onclick=()=>$("assessmentDialog").close();$("assessmentForm").onsubmit=saveAssessmentForm;$("addQuestionBtn").onclick=()=>addQuestionEditor({});$("generateAccessCodeBtn").onclick=()=>$("assessmentAccessCode").value=generateAccessCode();$("deleteAssessmentBtn").onclick=async()=>{if(!editingAssessmentId)return;if(confirm("이 수행평가를 삭제할까요?")){try{await deleteAssessment(editingAssessmentId);$("assessmentDialog").close();toast("수행평가를 삭제했습니다.");}catch(err){alert(err.message);}}};
-  $("closeRosterDialog").onclick=()=>$("rosterDialog").close();$("cancelRosterBtn").onclick=()=>$("rosterDialog").close();$("rosterClass").onchange=loadRosterDialogText;if($("rosterFile"))$("rosterFile").onchange=importRosterFile;$("applyRosterBtn").onclick=applyRoster;
+  $("closeRosterDialog").onclick=()=>$("rosterDialog").close();$("cancelRosterBtn").onclick=()=>$("rosterDialog").close();
+  $("closeSeatEditorBtn").onclick=()=>$("rosterDialog").close();$("backToRosterListBtn").onclick=()=>setRosterTab("list");
+  document.querySelectorAll("[data-roster-tab]").forEach(b=>b.onclick=()=>setRosterTab(b.dataset.rosterTab));
+  $("rosterClass").onchange=loadRosterDialogText;$("rosterColumns").onchange=renderSeatEditor;if($("rosterFile"))$("rosterFile").onchange=importRosterFile;$("applyRosterBtn").onclick=applyRoster;
+  $("seatResetBtn").onclick=()=>{if(confirm("현재 좌석을 학번 오름차순으로 다시 배치할까요? 아직 저장되지는 않습니다."))resetSeatEditorSlots();};
+  $("seatAddBlankBtn").onclick=()=>{seatEditorSlots.push(null);renderSeatEditor();};
+  $("seatAddRowBtn").onclick=()=>{const cols=Number($("rosterColumns").value||5);for(let i=0;i<cols;i++)seatEditorSlots.push(null);renderSeatEditor();};
+  $("seatTrimBlanksBtn").onclick=()=>{while(seatEditorSlots.length&&seatEditorSlots[seatEditorSlots.length-1]===null)seatEditorSlots.pop();renderSeatEditor();};
+  $("saveSeatLayoutBtn").onclick=saveSeatEditor;
+  $("closeStudentTestDialog").onclick=()=>$("studentTestDialog").close();$("cancelStudentTestBtn").onclick=()=>$("studentTestDialog").close();
+  $("testAssessmentSelect").onchange=refreshStudentTestSelectors;$("testClassSelect").onchange=refreshStudentTestSelectors;$("startStudentTestBtn").onclick=startStudentPreview;
 }
 
 bind();
@@ -924,9 +1076,9 @@ initDataLayer({
     materials=rows.map(r=>({...r,_source:source}));materialSource=source;
     renderMaterials();
   },
-  onStudents:(rows,source,projectId)=>{if(projectId&&activeProject&&projectId!==activeProject.id)return;students=rows;renderAssessments();},
+  onStudents:(rows,source,projectId)=>{if(projectId&&activeProject&&projectId!==activeProject.id)return;students=rows;renderAssessments();if($("rosterDialog")?.open){seatEditorSlots=layoutSlotsForClass($("rosterClass").value);renderSeatEditor();}},
   onAssessments:(rows,source,projectId)=>{if(projectId&&activeProject&&projectId!==activeProject.id)return;assessments=rows;renderAssessments();startAttemptWatch();},
-  onSeatLayouts:(rows,source,projectId)=>{if(projectId&&activeProject&&projectId!==activeProject.id)return;seatLayouts=rows;renderAssessmentMonitor();},
+  onSeatLayouts:(rows,source,projectId)=>{if(projectId&&activeProject&&projectId!==activeProject.id)return;seatLayouts=rows;renderAssessmentMonitor();if($("rosterDialog")?.open){seatEditorSlots=layoutSlotsForClass($("rosterClass").value);renderSeatEditor();}},
   onAuth:state=>{
     updateAuthUi(state);
     if(state.user&&recordSource==="local"){
