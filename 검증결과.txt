@@ -1,16 +1,6 @@
-JCOUP 관리자 v2.5.1 정적 검증 결과
-
-- 기준: 관리자 v2.5.0 공지 메뉴 전체 기능
-- 변경: Firebase Storage 첨부 -> Google Drive 공유 링크 첨부
-- 학생 포털 수정 없음(v1.5.1 유지)
-- firebase-storage.js import 제거 확인
-- Firebase Storage 업로드/삭제 함수 제거 확인
-- notice Drive 파일명/공유링크 입력 UI 확인
-- 공지당 최대 5개 제한 유지
-- Firestore 공지 저장/공개 구조 유지
-- 수행평가/좌석/진도/자료실 기존 기능 유지
-
-Node 구문 검사:
-- app.js: 통과 
-- db.js: 통과 
-- project-data.js: 통과 
+JCOUP 관리자 v2.5.2 정적 검증 결과
+- v2.5.1 기능 유지
+- index.html -> styles.css/app.js 캐시 버전 고정: OK
+- app.js -> project-data.js/db.js 동일 버전 고정: OK
+- db.js -> firebase-config.js/project-data.js 동일 버전 고정: OK
+- 목적: GitHub Pages 배포 직후 신/구 JS 혼재 방지
