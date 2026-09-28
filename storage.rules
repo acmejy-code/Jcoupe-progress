@@ -1,0 +1,22 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isCourseOwner(courseId) {
+      return signedIn()
+        && firestore.get(/databases/(default)/documents/publicCourses/$(courseId)).data.ownerUid == request.auth.uid;
+    }
+
+    // 공지 첨부파일: 학생은 공개 읽기, 해당 수업 프로젝트 소유자만 업로드·삭제 가능
+    match /noticeAttachments/{courseId}/{noticeId}/{fileName} {
+      allow read: if true;
+      allow create, update: if isCourseOwner(courseId)
+                            && request.resource.size < 20 * 1024 * 1024;
+      allow delete: if isCourseOwner(courseId);
+    }
+  }
+}

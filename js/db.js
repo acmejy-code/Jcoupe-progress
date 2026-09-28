@@ -8,15 +8,18 @@ const LEGACY_LOCAL_KEY = "doktogul_progress_v1_records";
 let firebase = null;
 let auth = null;
 let db = null;
+let storage = null;
 let currentUser = null;
 let unsubscribeRecords = null;
 let unsubscribeMaterials = null;
+let unsubscribeNotices = null;
 let unsubscribeStudents = null;
 let unsubscribeAssessments = null;
 let unsubscribeSeatLayouts = null;
 let unsubscribeAttempts = null;
 let onRecordsCb = null;
 let onMaterialsCb = null;
+let onNoticesCb = null;
 let onStudentsCb = null;
 let onAssessmentsCb = null;
 let onSeatLayoutsCb = null;
@@ -147,6 +150,9 @@ function stopRecordListener(){
 function stopMaterialListener(){
   if(unsubscribeMaterials){ unsubscribeMaterials(); unsubscribeMaterials = null; }
 }
+function stopNoticeListener(){
+  if(unsubscribeNotices){ unsubscribeNotices(); unsubscribeNotices = null; }
+}
 function stopStudentListener(){
   if(unsubscribeStudents){ unsubscribeStudents(); unsubscribeStudents = null; }
 }
@@ -160,7 +166,7 @@ function stopAttemptListener(){
   if(unsubscribeAttempts){ unsubscribeAttempts(); unsubscribeAttempts = null; }
 }
 function stopProjectListeners(){
-  stopRecordListener(); stopMaterialListener(); stopStudentListener(); stopAssessmentListener(); stopSeatLayoutListener(); stopAttemptListener();
+  stopRecordListener(); stopMaterialListener(); stopNoticeListener(); stopStudentListener(); stopAssessmentListener(); stopSeatLayoutListener(); stopAttemptListener();
 }
 
 function startCloudRecordListener(){
@@ -196,6 +202,25 @@ function startCloudMaterialListener(){
     },
     err=>{
       console.error("Firestore material snapshot error:", err);
+      onAuthCb?.({configured:true,user:currentUser,mode:"cloud",error:err.message});
+    }
+  );
+}
+
+function startCloudNoticeListener(){
+  stopNoticeListener();
+  const q = firebase.fsMod.query(
+    firebase.fsMod.collection(db, "users", currentUser.uid, "courseProjects", activeProjectId, "notices"),
+    firebase.fsMod.orderBy("updatedAt", "desc")
+  );
+  unsubscribeNotices = firebase.fsMod.onSnapshot(
+    q,
+    snap=>{
+      const rows=snap.docs.map(d=>({id:d.id, ...d.data(), projectId:activeProjectId}));
+      onNoticesCb?.(rows, "cloud", activeProjectId);
+    },
+    err=>{
+      console.error("Firestore notice snapshot error:", err);
       onAuthCb?.({configured:true,user:currentUser,mode:"cloud",error:err.message});
     }
   );
@@ -249,14 +274,16 @@ function startCloudSeatLayoutListener(){
 function startCloudProjectListeners(){
   startCloudRecordListener();
   startCloudMaterialListener();
+  startCloudNoticeListener();
   startCloudStudentListener();
   startCloudAssessmentListener();
   startCloudSeatLayoutListener();
 }
 
-export async function initDataLayer({onRecords,onMaterials,onStudents,onAssessments,onSeatLayouts,onProjects,onAuth}){
+export async function initDataLayer({onRecords,onMaterials,onNotices,onStudents,onAssessments,onSeatLayouts,onProjects,onAuth}){
   onRecordsCb=onRecords;
   onMaterialsCb=onMaterials;
+  onNoticesCb=onNotices;
   onStudentsCb=onStudents;
   onAssessmentsCb=onAssessments;
   onSeatLayoutsCb=onSeatLayouts;
@@ -268,6 +295,7 @@ export async function initDataLayer({onRecords,onMaterials,onStudents,onAssessme
   emitLocalProjects();
   emitLocalRecords();
   emitLocalMaterials();
+  onNoticesCb?.([],"local",activeProjectId);
   onStudentsCb?.([],"local",activeProjectId);
   onAssessmentsCb?.([],"local",activeProjectId);
   onSeatLayoutsCb?.([],"local",activeProjectId);
@@ -279,15 +307,17 @@ export async function initDataLayer({onRecords,onMaterials,onStudents,onAssessme
   }
 
   try{
-    const [appMod,authMod,fsMod]=await Promise.all([
+    const [appMod,authMod,fsMod,storageMod]=await Promise.all([
       import("https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js"),
       import("https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js"),
-      import("https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js")
+      import("https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js"),
+      import("https://www.gstatic.com/firebasejs/12.17.1/firebase-storage.js")
     ]);
     const app=appMod.initializeApp(firebaseConfig);
     auth=authMod.getAuth(app);
     db=fsMod.getFirestore(app);
-    firebase={authMod,fsMod};
+    storage=storageMod.getStorage(app);
+    firebase={authMod,fsMod,storageMod};
 
     authMod.onAuthStateChanged(auth, async user=>{
       currentUser=user||null;
@@ -297,6 +327,7 @@ export async function initDataLayer({onRecords,onMaterials,onStudents,onAssessme
         emitLocalProjects();
         emitLocalRecords();
         emitLocalMaterials();
+        onNoticesCb?.([],"local",activeProjectId);
         onStudentsCb?.([],"local",activeProjectId);
         onAssessmentsCb?.([],"local",activeProjectId);
         onSeatLayoutsCb?.([],"local",activeProjectId);
@@ -327,6 +358,7 @@ export async function setActiveProject(projectId){
   if(storageMode()==="cloud") startCloudProjectListeners();
   else {
     emitLocalRecords(); emitLocalMaterials();
+    onNoticesCb?.([],"local",activeProjectId);
     onStudentsCb?.([],"local",activeProjectId);
     onAssessmentsCb?.([],"local",activeProjectId);
     onSeatLayoutsCb?.([],"local",activeProjectId);
@@ -494,6 +526,107 @@ export async function migrateLocalMaterialsToCloud(){
   return rows.length;
 }
 
+
+function normalizeNotice(notice){
+  const n={...notice};
+  delete n._source;
+  n.id=String(n.id||crypto.randomUUID());
+  n.projectId=String(n.projectId||activeProjectId);
+  n.type=["ASSESSMENT","GENERAL"].includes(String(n.type))?String(n.type):"GENERAL";
+  n.title=String(n.title||"").trim();
+  n.body=String(n.body||"").trim();
+  n.isPublished=n.isPublished!==false;
+  n.attachments=Array.isArray(n.attachments)?n.attachments.map(a=>({
+    name:String(a?.name||"첨부파일"),
+    size:Number(a?.size||0),
+    type:String(a?.type||""),
+    path:String(a?.path||""),
+    url:String(a?.url||"")
+  })).filter(a=>a.url):[];
+  n.createdAt=String(n.createdAt||new Date().toISOString());
+  n.updatedAt=String(n.updatedAt||new Date().toISOString());
+  return n;
+}
+function publicNotice(notice){
+  const n=normalizeNotice(notice);
+  return {
+    noticeId:n.id,
+    type:n.type,
+    title:n.title,
+    body:n.body,
+    attachments:n.attachments,
+    createdAt:n.createdAt,
+    updatedAt:n.updatedAt
+  };
+}
+async function syncPublicNotice(notice){
+  const n=normalizeNotice(notice);
+  await ensurePublicCourseShell();
+  const ref=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"notices",n.id);
+  if(n.isPublished) await firebase.fsMod.setDoc(ref,publicNotice(n),{merge:true});
+  else await firebase.fsMod.deleteDoc(ref).catch(()=>{});
+  return n;
+}
+export async function uploadNoticeAttachments(noticeId,files){
+  requireNoticeCloud();
+  await ensurePublicCourseShell();
+  const list=Array.from(files||[]);
+  if(list.length>5) throw new Error("첨부파일은 한 공지에 최대 5개까지 선택할 수 있습니다.");
+  const tooLarge=list.find(f=>Number(f.size||0)>20*1024*1024);
+  if(tooLarge) throw new Error(`${tooLarge.name} 파일이 20MB를 초과합니다.`);
+  const results=[];
+  for(const file of list){
+    const safeName=String(file.name||"file").replace(/[\\/#?\[\]]/g,"_").slice(-160);
+    const unique=`${Date.now()}_${crypto.randomUUID?.()||Math.random().toString(36).slice(2)}_${safeName}`;
+    const path=`noticeAttachments/${activeProjectId}/${String(noticeId)}/${unique}`;
+    const ref=firebase.storageMod.ref(storage,path);
+    await firebase.storageMod.uploadBytes(ref,file,{contentType:file.type||"application/octet-stream"});
+    const url=await firebase.storageMod.getDownloadURL(ref);
+    results.push({name:String(file.name||safeName),size:Number(file.size||0),type:String(file.type||""),path,url});
+  }
+  return results;
+}
+export async function deleteNoticeAttachment(path){
+  requireNoticeCloud();
+  const clean=String(path||"").trim();
+  if(!clean)return;
+  try{await firebase.storageMod.deleteObject(firebase.storageMod.ref(storage,clean));}
+  catch(err){if(err?.code!=="storage/object-not-found")throw err;}
+}
+export async function upsertNotice(notice){
+  requireNoticeCloud();
+  const n=normalizeNotice(notice);
+  if(!n.title)throw new Error("공지 제목을 입력해 주세요.");
+  if(!n.body)throw new Error("공지 내용을 입력해 주세요.");
+  await ensurePublicCourseShell();
+  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"notices",n.id);
+  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"notices",n.id);
+  const batch=firebase.fsMod.writeBatch(db);
+  batch.set(privateRef,n,{merge:true});
+  if(n.isPublished)batch.set(publicRef,publicNotice(n),{merge:true});
+  else batch.delete(publicRef);
+  await batch.commit();
+  return n;
+}
+export async function deleteNoticeById(id){
+  requireNoticeCloud();
+  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"notices",String(id));
+  const snap=await firebase.fsMod.getDoc(privateRef);
+  const attachments=snap.exists()?(snap.data().attachments||[]):[];
+  const batch=firebase.fsMod.writeBatch(db);
+  batch.delete(privateRef);
+  batch.delete(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"notices",String(id)));
+  await batch.commit();
+  for(const a of attachments){
+    if(a?.path){try{await deleteNoticeAttachment(a.path);}catch(err){console.warn("notice attachment delete failed",err);}}
+  }
+}
+function requireNoticeCloud(){
+  if(storageMode()!=="cloud"||!currentUser||!firebase||!db||!storage){
+    throw new Error("공지 작성과 파일 첨부는 Google 로그인 상태에서 사용할 수 있습니다.");
+  }
+}
+
 export async function saveProject(project){
   const p=normalizeProject(project);
   if(!p.id) throw new Error("프로젝트 ID가 없습니다.");
@@ -553,9 +686,10 @@ export async function publishStudentPortalData(projectId=activeProjectId){
   const project=currentProjects.find(p=>String(p.id)===String(projectId));
   if(!project) throw new Error("발행할 수업 프로젝트를 찾을 수 없습니다.");
 
-  const [recordSnap,materialSnap]=await Promise.all([
+  const [recordSnap,materialSnap,noticeSnap]=await Promise.all([
     firebase.fsMod.getDocs(firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",projectId,"lessonRecords")),
-    firebase.fsMod.getDocs(firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",projectId,"materials"))
+    firebase.fsMod.getDocs(firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",projectId,"materials")),
+    firebase.fsMod.getDocs(firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",projectId,"notices"))
   ]);
   const sourceRows=recordSnap.docs.map(d=>({id:d.id,...d.data()}));
   const visibleRows=sourceRows
@@ -565,13 +699,19 @@ export async function publishStudentPortalData(projectId=activeProjectId){
     .map(d=>({id:d.id,...d.data()}))
     .filter(m=>m.isPublished!==false && String(m.title||"").trim() && String(m.fileId||"").trim())
     .sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+  const visibleNotices=noticeSnap.docs
+    .map(d=>normalizeNotice({id:d.id,...d.data()}))
+    .filter(n=>n.isPublished!==false && n.title && n.body)
+    .sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
 
   const publicRef=firebase.fsMod.doc(db,"publicCourses",projectId);
   const classesRef=firebase.fsMod.collection(db,"publicCourses",projectId,"classes");
   const materialsRef=firebase.fsMod.collection(db,"publicCourses",projectId,"materials");
-  const [existingClassSnap,existingMaterialSnap]=await Promise.all([
+  const noticesRef=firebase.fsMod.collection(db,"publicCourses",projectId,"notices");
+  const [existingClassSnap,existingMaterialSnap,existingNoticeSnap]=await Promise.all([
     firebase.fsMod.getDocs(classesRef),
-    firebase.fsMod.getDocs(materialsRef)
+    firebase.fsMod.getDocs(materialsRef),
+    firebase.fsMod.getDocs(noticesRef)
   ]);
 
   const batch=firebase.fsMod.writeBatch(db);
@@ -588,11 +728,13 @@ export async function publishStudentPortalData(projectId=activeProjectId){
     classes: Array.isArray(project.classes)?project.classes.map(String):[],
     publishedRecordCount: visibleRows.length,
     publishedMaterialCount: visibleMaterials.length,
+    publishedNoticeCount: visibleNotices.length,
     updatedAt: firebase.fsMod.serverTimestamp()
   },{merge:true});
 
   existingClassSnap.docs.forEach(d=>batch.delete(d.ref));
   existingMaterialSnap.docs.forEach(d=>batch.delete(d.ref));
+  existingNoticeSnap.docs.forEach(d=>batch.delete(d.ref));
 
   for(const className of (project.classes||[])){
     const classRows=visibleRows.filter(r=>String(r.className)===String(className));
@@ -609,12 +751,19 @@ export async function publishStudentPortalData(projectId=activeProjectId){
       publicMaterial(material)
     );
   }
+  for(const notice of visibleNotices){
+    batch.set(
+      firebase.fsMod.doc(db,"publicCourses",projectId,"notices",String(notice.id)),
+      publicNotice(notice)
+    );
+  }
 
   await batch.commit();
   return {
     projectId,
     publishedRecordCount: visibleRows.length,
     publishedMaterialCount: visibleMaterials.length,
+    publishedNoticeCount: visibleNotices.length,
     classCount: (project.classes||[]).filter(c=>visibleRows.some(r=>String(r.className)===String(c))).length
   };
 }

@@ -58,6 +58,12 @@ service cloud.firestore {
         allow create, update, delete: if isCourseOwner(courseId);
       }
 
+      // 학생 포털 공지. 공개 컬렉션에는 학생에게 보여 줄 내용과 첨부파일 메타데이터만 둡니다.
+      match /notices/{noticeId} {
+        allow read: if true;
+        allow create, update, delete: if isCourseOwner(courseId);
+      }
+
       // 수행평가 목록에는 제목·상태·대상 반 등 공개 메타데이터만 둡니다.
       match /assessments/{assessmentId} {
         allow read: if true;
