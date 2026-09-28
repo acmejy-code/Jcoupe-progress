@@ -709,6 +709,20 @@ async function publishAssessmentPublic(assessment){
   return a;
 }
 
+function buildVerticalLineSlots(ids,lineCount){
+  const list=(ids||[]).filter(Boolean).map(String);
+  const cols=Math.min(8,Math.max(2,Number(lineCount||5)));
+  if(!list.length)return [];
+  const rows=Math.ceil(list.length/cols),base=Math.floor(list.length/cols),extra=list.length%cols;
+  const slots=Array(rows*cols).fill(null);
+  let cursor=0;
+  for(let col=0;col<cols;col++){
+    const count=base+(col<extra?1:0);
+    for(let row=0;row<count;row++)slots[row*cols+col]=list[cursor++];
+  }
+  return slots;
+}
+
 export async function replaceStudentsForClass(className,students){
   requireAssessmentCloud();
   const cls=String(className||"").trim();
@@ -727,19 +741,26 @@ export async function replaceStudentsForClass(className,students){
   old.forEach(d=>batch.delete(d.ref));
   normalized.forEach(st=>batch.set(firebase.fsMod.doc(col,st.studentId),st));
   await batch.commit();
-  await saveSeatLayout(cls,5,normalized.map(s=>s.studentId));
+  const initialIds=normalized.map(s=>s.studentId);
+  await saveSeatLayout(cls,5,initialIds,buildVerticalLineSlots(initialIds,5));
   return normalized.length;
 }
 
-export async function saveSeatLayout(className,columns,orderedStudentIds,slots=null){
+export async function saveSeatLayout(className,columns,orderedStudentIds,slots=null,layoutMeta=null){
   requireAssessmentCloud();
   const cls=String(className||"").trim();
   const safeColumns=Math.min(8,Math.max(2,Number(columns||5)));
   const safeOrdered=(orderedStudentIds||[]).filter(Boolean).map(String);
-  const safeSlots=Array.isArray(slots)?slots.map(v=>v?String(v):null):safeOrdered.slice();
+  const safeSlots=Array.isArray(slots)?slots.map(v=>v?String(v):null):buildVerticalLineSlots(safeOrdered,safeColumns);
+  const payload={className:cls,columns:safeColumns,verticalLines:safeColumns,flow:"VERTICAL_LINES",orderedStudentIds:safeOrdered,slots:safeSlots,updatedAt:new Date().toISOString()};
+  if(layoutMeta&&typeof layoutMeta==="object"){
+    const normSide=v=>["CORRIDOR","OUTER"].includes(String(v||"").toUpperCase())?String(v).toUpperCase():"NONE";
+    if("leftSide" in layoutMeta)payload.leftSide=normSide(layoutMeta.leftSide);
+    if("rightSide" in layoutMeta)payload.rightSide=normSide(layoutMeta.rightSide);
+  }
   await firebase.fsMod.setDoc(
     firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"seatLayouts",cls),
-    {className:cls,columns:safeColumns,orderedStudentIds:safeOrdered,slots:safeSlots,updatedAt:new Date().toISOString()},
+    payload,
     {merge:true}
   );
 }

@@ -254,7 +254,7 @@
 
   <div class="roster-top-controls">
     <div class="field"><label>반</label><select id="rosterClass"></select></div>
-    <div class="field"><label>한 줄 좌석 수</label><select id="rosterColumns"><option>4</option><option selected>5</option><option>6</option><option>7</option><option>8</option></select></div>
+    <div class="field"><label>세로줄 수</label><select id="rosterColumns"><option>4</option><option selected>5</option><option>6</option><option>7</option><option>8</option></select><div class="small muted">칠판·교탁을 바라봤을 때 왼쪽→오른쪽으로 나뉘는 앞뒤 좌석 열의 개수입니다.</div></div>
   </div>
 
   <div class="roster-tabs">
@@ -296,10 +296,20 @@
           <button type="button" class="btn small-btn" id="seatAddBlankBtn">＋ 빈 자리</button>
           <button type="button" class="btn small-btn" id="seatAddRowBtn">＋ 빈 행</button>
           <button type="button" class="btn small-btn" id="seatTrimBlanksBtn">끝 빈칸 정리</button>
+          <button type="button" class="btn small-btn" id="seatSideBtn">창가 표시</button>
         </div>
       </div>
+      <div id="seatSidePanel" class="seat-side-panel hidden">
+        <div class="seat-side-field"><label for="seatLeftSide">왼쪽</label><select id="seatLeftSide"><option value="NONE">표시 안 함</option><option value="CORRIDOR">복도쪽 창가</option><option value="OUTER">외벽 창가</option></select></div>
+        <div class="seat-side-field"><label for="seatRightSide">오른쪽</label><select id="seatRightSide"><option value="NONE">표시 안 함</option><option value="CORRIDOR">복도쪽 창가</option><option value="OUTER">외벽 창가</option></select></div>
+        <div class="seat-side-panel-actions"><button type="button" class="btn small-btn" id="seatSwapSidesBtn">좌우 바꾸기</button><button type="button" class="btn small-btn primary" id="seatSideDoneBtn">적용</button></div>
+      </div>
       <div class="front-label seat-editor-front">칠판 · 교탁 (교실 앞)</div>
-      <div id="seatEditorGrid" class="seat-grid seat-editor-grid"></div>
+      <div class="seat-room-layout">
+        <div id="seatEditorLeftMarker" class="seat-side-marker hidden" aria-label="왼쪽 교실 방향"></div>
+        <div id="seatEditorGrid" class="seat-grid seat-editor-grid"></div>
+        <div id="seatEditorRightMarker" class="seat-side-marker hidden" aria-label="오른쪽 교실 방향"></div>
+      </div>
       <div class="seat-editor-legend small muted">빈 자리의 ×를 누르면 해당 빈칸만 삭제할 수 있습니다. 학생 카드를 빈 자리 위로 끌어 놓으면 서로 자리가 바뀝니다.</div>
     </div>
     <div class="modal-foot">

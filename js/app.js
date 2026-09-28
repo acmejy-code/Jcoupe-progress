@@ -43,6 +43,9 @@ let editingAssessmentId=null;
 let draggedStudentId=null;
 let seatEditorSlots=[];
 let seatEditorDragIndex=null;
+let seatEditorLeftSide="NONE";
+let seatEditorRightSide="NONE";
+let seatEditorLineCount=5;
 let previewPayload=null;
 let previewWindow=null;
 
@@ -634,9 +637,35 @@ function openStudentPortal(){
 function nameKey(v){return String(v||"").replace(/\s+/g,"").trim();}
 function classStudents(cls){return students.filter(s=>String(s.className)===String(cls)).sort((a,b)=>String(a.studentId).localeCompare(String(b.studentId),"ko",{numeric:true}));}
 function getSeatLayout(cls){return seatLayouts.find(x=>String(x.className||x.id)===String(cls))||null;}
+function seatLineCount(layoutOrValue=5){
+  const raw=(layoutOrValue&&typeof layoutOrValue==="object")?(layoutOrValue.verticalLines??layoutOrValue.columns??5):layoutOrValue;
+  return Math.min(8,Math.max(2,Number(raw||5)));
+}
+function normalizeSeatSide(v){return ["CORRIDOR","OUTER"].includes(String(v||"").toUpperCase())?String(v).toUpperCase():"NONE";}
+function seatSideText(v){return normalizeSeatSide(v)==="CORRIDOR"?"복도쪽 창가":normalizeSeatSide(v)==="OUTER"?"외벽 창가":"";}
+function buildVerticalLineSlots(ids,lineCount){
+  const list=(ids||[]).filter(Boolean).map(String), cols=seatLineCount(lineCount);
+  if(!list.length)return [];
+  const rows=Math.ceil(list.length/cols), base=Math.floor(list.length/cols), extra=list.length%cols;
+  const slots=Array(rows*cols).fill(null);
+  let cursor=0;
+  for(let col=0;col<cols;col++){
+    const count=base+(col<extra?1:0);
+    for(let row=0;row<count;row++) slots[row*cols+col]=list[cursor++];
+  }
+  return slots;
+}
+function verticalStudentOrder(slots,lineCount){
+  const cols=seatLineCount(lineCount), list=Array.isArray(slots)?slots:[], rows=Math.ceil(list.length/cols), out=[];
+  for(let col=0;col<cols;col++)for(let row=0;row<rows;row++){const id=list[row*cols+col];if(id)out.push(String(id));}
+  return out;
+}
 function layoutSlotsForClass(cls){
   const rows=classStudents(cls), layout=getSeatLayout(cls), valid=new Set(rows.map(s=>String(s.studentId)));
   const source=Array.isArray(layout?.slots)&&layout.slots.length?layout.slots:(layout?.orderedStudentIds||[]);
+  const sortedIds=rows.map(s=>String(s.studentId));
+  const legacyDefault=layout&&layout.flow!=="VERTICAL_LINES"&&source.length===sortedIds.length&&source.every((v,i)=>String(v||"")===sortedIds[i]);
+  if(legacyDefault)return buildVerticalLineSlots(sortedIds,seatLineCount(layout));
   const slots=[], used=new Set();
   source.forEach(v=>{
     if(v===null||v===undefined||v===""){slots.push(null);return;}
@@ -702,30 +731,54 @@ function openRosterDialog(){
 }
 function loadRosterDialogText(){
   const cls=$("rosterClass").value, layout=getSeatLayout(cls);
-  $("rosterColumns").value=String(layout?.columns||5);
+  seatEditorLineCount=seatLineCount(layout||5);
+  $("rosterColumns").value=String(seatEditorLineCount);
+  seatEditorLeftSide=normalizeSeatSide(layout?.leftSide);
+  seatEditorRightSide=normalizeSeatSide(layout?.rightSide);
+  if($("seatLeftSide"))$("seatLeftSide").value=seatEditorLeftSide;
+  if($("seatRightSide"))$("seatRightSide").value=seatEditorRightSide;
+  $("seatSidePanel")?.classList.add("hidden");
   $("rosterText").value=classStudents(cls).map(s=>`${s.studentId}\t${s.name}`).join("\n");
   seatEditorSlots=layoutSlotsForClass(cls);
   renderSeatEditor();
 }
 function resetSeatEditorSlots(){
-  seatEditorSlots=classStudents($("rosterClass").value).map(s=>String(s.studentId));
+  const cols=seatLineCount($("rosterColumns").value);
+  seatEditorLineCount=cols;
+  seatEditorSlots=buildVerticalLineSlots(classStudents($("rosterClass").value).map(s=>String(s.studentId)),cols);
   renderSeatEditor();
+}
+function renderSeatSideMarkers(){
+  const pairs=[["seatEditorLeftMarker",seatEditorLeftSide],["seatEditorRightMarker",seatEditorRightSide]];
+  pairs.forEach(([id,value])=>{const el=$(id);if(!el)return;const label=seatSideText(value);el.textContent=label;el.classList.toggle("hidden",!label);el.classList.toggle("corridor",normalizeSeatSide(value)==="CORRIDOR");el.classList.toggle("outer",normalizeSeatSide(value)==="OUTER");});
+  const btn=$("seatSideBtn");if(btn)btn.classList.toggle("seat-side-btn-active",seatEditorLeftSide!=="NONE"||seatEditorRightSide!=="NONE");
+}
+function applySeatSideSettings(){
+  seatEditorLeftSide=normalizeSeatSide($("seatLeftSide")?.value);
+  seatEditorRightSide=normalizeSeatSide($("seatRightSide")?.value);
+  renderSeatSideMarkers();
+  $("seatSidePanel")?.classList.add("hidden");
+}
+function swapSeatSides(){
+  const left=$("seatLeftSide"),right=$("seatRightSide");if(!left||!right)return;
+  const tmp=left.value;left.value=right.value;right.value=tmp;
 }
 function renderSeatEditor(){
   const grid=$("seatEditorGrid");if(!grid)return;
-  const cls=$("rosterClass").value, cols=Number($("rosterColumns").value||5), rows=classStudents(cls);
+  const cls=$("rosterClass").value, cols=seatLineCount($("rosterColumns").value), rows=classStudents(cls);
   const studentMap=new Map(rows.map(s=>[String(s.studentId),s]));
   const valid=new Set(rows.map(s=>String(s.studentId))), used=new Set();
   seatEditorSlots=(seatEditorSlots||[]).map(v=>v?String(v):null).filter(v=>!v||valid.has(v));
   seatEditorSlots=seatEditorSlots.map(v=>{if(!v)return null;if(used.has(v))return null;used.add(v);return v;});
   rows.forEach(st=>{const id=String(st.studentId);if(!used.has(id)){seatEditorSlots.push(id);used.add(id);}});
-  $("seatEditorTitle").textContent=`${cls}반 좌석 배치 · ${rows.length}명`;
+  $("seatEditorTitle").textContent=`${cls}반 좌석 배치 · ${rows.length}명 · 세로줄 ${cols}개`;
   grid.style.gridTemplateColumns=`repeat(${cols},minmax(0,1fr))`;
+  renderSeatSideMarkers();
   if(!seatEditorSlots.length){grid.innerHTML='<div class="assessment-empty">먼저 학생 명단을 등록해 주세요.</div>';return;}
   grid.innerHTML=seatEditorSlots.map((id,index)=>{
     if(!id)return `<div class="seat-editor-slot empty" data-seat-index="${index}"><span>빈 자리</span><button type="button" class="seat-empty-remove" data-remove-empty="${index}" title="빈 자리 삭제">×</button></div>`;
-    const st=studentMap.get(String(id));
-    return `<div class="seat-editor-slot" data-seat-index="${index}"><div class="seat-card status-none" draggable="true" data-seat-drag-index="${index}"><div class="seat-id">${esc(st?.studentId||id)}</div><strong>${esc(st?.name||"")}</strong><span>좌석 이동</span><small class="seat-position">${index+1}번째 칸</small></div></div>`;
+    const st=studentMap.get(String(id)), row=Math.floor(index/cols)+1, col=(index%cols)+1;
+    return `<div class="seat-editor-slot" data-seat-index="${index}"><div class="seat-card status-none" draggable="true" data-seat-drag-index="${index}"><div class="seat-id">${esc(st?.studentId||id)}</div><strong>${esc(st?.name||"")}</strong><span>좌석 이동</span><small class="seat-position">왼쪽 ${col}번째 세로줄 · 앞에서 ${row}번째</small></div></div>`;
   }).join("");
   grid.querySelectorAll("[data-seat-index]").forEach(slot=>{
     slot.ondragover=e=>{e.preventDefault();slot.classList.add("drag-over")};
@@ -739,11 +792,11 @@ function renderSeatEditor(){
   grid.querySelectorAll("[data-remove-empty]").forEach(btn=>btn.onclick=e=>{e.stopPropagation();seatEditorSlots.splice(Number(btn.dataset.removeEmpty),1);renderSeatEditor();});
 }
 async function saveSeatEditor(){
-  const cls=$("rosterClass").value,cols=Number($("rosterColumns").value||5);
-  const ids=seatEditorSlots.filter(Boolean);
+  const cls=$("rosterClass").value,cols=seatLineCount($("rosterColumns").value);
+  const ids=verticalStudentOrder(seatEditorSlots,cols);
   const rosterIds=classStudents(cls).map(s=>String(s.studentId));
   if(ids.length!==rosterIds.length||new Set(ids).size!==rosterIds.length){alert("좌석에 모든 학생이 정확히 한 번씩 배치되어야 합니다.");return;}
-  try{await saveSeatLayout(cls,cols,ids,seatEditorSlots);selectedMonitorClass=cls;toast(`${cls}반 좌석 배치를 저장했습니다.`);renderAssessmentMonitor();}catch(err){alert(err.message);}
+  try{await saveSeatLayout(cls,cols,ids,seatEditorSlots,{leftSide:seatEditorLeftSide,rightSide:seatEditorRightSide,flow:"VERTICAL_LINES"});selectedMonitorClass=cls;toast(`${cls}반 좌석 배치와 교실 방향을 저장했습니다.`);renderAssessmentMonitor();}catch(err){alert(err.message);}
 }
 function isValidStudentId(value){return /^\d{4,5}$/.test(String(value||"").trim());}
 function normalizeRosterRows(rows){
@@ -867,13 +920,14 @@ async function importRosterFile(){
 async function applyRoster(){
   let rows; try{rows=parseRosterText($("rosterText").value);}catch(err){alert(err.message);return;}
   const cls=$("rosterClass").value;if(!rows.length){alert("학생 명단을 입력해 주세요.");return;}
-  if(!confirm(`${cls}반 명단을 ${rows.length}명으로 교체할까요?\n좌석은 학번 오름차순으로 다시 배치됩니다.`))return;
+  if(!confirm(`${cls}반 명단을 ${rows.length}명으로 교체할까요?\n좌석은 학번 오름차순으로 세로줄의 앞→뒤 방향부터 다시 배치됩니다.`))return;
   try{
     await replaceStudentsForClass(cls,rows);
-    const cols=Number($("rosterColumns").value||5);
-    await saveSeatLayout(cls,cols,rows.map(x=>x.studentId),rows.map(x=>x.studentId));
+    const cols=seatLineCount($("rosterColumns").value);
+    const orderedIds=rows.map(x=>String(x.studentId)),initialSlots=buildVerticalLineSlots(orderedIds,cols);
+    await saveSeatLayout(cls,cols,orderedIds,initialSlots,{leftSide:seatEditorLeftSide,rightSide:seatEditorRightSide,flow:"VERTICAL_LINES"});
     students=students.filter(s=>String(s.className)!==String(cls)).concat(rows.map((r,i)=>({...r,className:cls,seatOrder:i+1})));
-    seatEditorSlots=rows.map(x=>String(x.studentId));selectedMonitorClass=cls;
+    seatEditorLineCount=cols;seatEditorSlots=initialSlots;selectedMonitorClass=cls;
     toast(`${cls}반 ${rows.length}명 명단을 적용했습니다. 이제 실제 좌석을 배치하세요.`);
     setRosterTab("seat");renderAssessments();
   }catch(err){alert(err.message);}
@@ -885,15 +939,18 @@ function startAttemptWatch(){
 function renderAssessmentMonitor(){
   const root=$("assessmentMonitor");if(!root)return;const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a){root.innerHTML="";return;}
   const cls=selectedMonitorClass||a.targetClasses?.[0]||projectClasses()[0]||"";selectedMonitorClass=cls;
-  const layout=getSeatLayout(cls),cols=Number(layout?.columns||5),slots=layoutSlotsForClass(cls),studentMap=new Map(classStudents(cls).map(s=>[String(s.studentId),s]));
+  const layout=getSeatLayout(cls),cols=seatLineCount(layout||5),slots=layoutSlotsForClass(cls),studentMap=new Map(classStudents(cls).map(s=>[String(s.studentId),s]));
   const rows=slots.filter(Boolean).map(id=>studentMap.get(String(id))).filter(Boolean);
   const statuses=rows.map(s=>statusInfo(s.studentId));
   const count=k=>statuses.filter(x=>x.key===k).length;
-  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">저장한 실제 교실 좌석(빈 자리 포함)을 그대로 표시 · Firestore 상태 변경 즉시 반영 · 화면 상태 10초마다 재계산</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>제출 ${count("SUBMITTED")}</span><span>연결이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${slots.map((id,index)=>{if(!id)return `<div class="seat-empty-monitor" data-monitor-slot="${index}">빈 자리</div>`;const s=studentMap.get(String(id));if(!s)return `<div class="seat-empty-monitor">빈 자리</div>`;const st=statusInfo(s.studentId);return `<div class="seat-card status-${st.key.toLowerCase()}" draggable="true" data-seat-student="${esc(s.studentId)}" data-monitor-slot="${index}"><div class="seat-id">${esc(s.studentId)}</div><strong>${esc(s.name)}</strong><span>${st.label}</span><small>${esc(st.sub)}</small></div>`;}).join("")}</div><div class="seat-tools"><span class="small muted">좌석 수정은 [학생 명단·좌석] → [좌석 배치]에서 하는 것을 권장합니다. 이 화면에서도 학생 카드를 드래그하여 임시 조정 후 저장할 수 있습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
+  const leftLabel=seatSideText(layout?.leftSide),rightLabel=seatSideText(layout?.rightSide);
+  const leftMarker=leftLabel?`<div class="seat-side-marker ${normalizeSeatSide(layout?.leftSide).toLowerCase()}">${esc(leftLabel)}</div>`:"";
+  const rightMarker=rightLabel?`<div class="seat-side-marker ${normalizeSeatSide(layout?.rightSide).toLowerCase()}">${esc(rightLabel)}</div>`:"";
+  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">세로줄 ${cols}개 · 저장한 실제 교실 좌석(빈 자리 포함)과 창가 방향을 그대로 표시 · Firestore 상태 변경 즉시 반영 · 화면 상태 10초마다 재계산</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>제출 ${count("SUBMITTED")}</span><span>연결이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-room-layout">${leftMarker}<div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${slots.map((id,index)=>{if(!id)return `<div class="seat-empty-monitor" data-monitor-slot="${index}">빈 자리</div>`;const s=studentMap.get(String(id));if(!s)return `<div class="seat-empty-monitor">빈 자리</div>`;const st=statusInfo(s.studentId);return `<div class="seat-card status-${st.key.toLowerCase()}" draggable="true" data-seat-student="${esc(s.studentId)}" data-monitor-slot="${index}"><div class="seat-id">${esc(s.studentId)}</div><strong>${esc(s.name)}</strong><span>${st.label}</span><small>${esc(st.sub)}</small></div>`;}).join("")}</div>${rightMarker}</div><div class="seat-tools"><span class="small muted">좌석 수정은 [학생 명단·좌석] → [좌석 배치]에서 하는 것을 권장합니다. 이 화면에서도 학생 카드를 드래그하여 임시 조정 후 저장할 수 있습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
   let dragIndex=null;const grid=root.querySelector(".seat-grid");
-  root.querySelectorAll("[data-monitor-slot]").forEach(slot=>{slot.ondragover=e=>e.preventDefault();slot.ondrop=e=>{e.preventDefault();const to=Number(slot.dataset.monitorSlot);if(dragIndex===null||to===dragIndex)return;const tmp=slots[to]??null;slots[to]=slots[dragIndex]??null;slots[dragIndex]=tmp;dragIndex=null;const ids=slots.filter(Boolean);saveSeatLayout(cls,cols,ids,slots).then(()=>toast("좌석 위치를 저장했습니다.")).catch(err=>alert(err.message));};});
+  root.querySelectorAll("[data-monitor-slot]").forEach(slot=>{slot.ondragover=e=>e.preventDefault();slot.ondrop=e=>{e.preventDefault();const to=Number(slot.dataset.monitorSlot);if(dragIndex===null||to===dragIndex)return;const tmp=slots[to]??null;slots[to]=slots[dragIndex]??null;slots[dragIndex]=tmp;dragIndex=null;const ids=verticalStudentOrder(slots,cols);saveSeatLayout(cls,cols,ids,slots).then(()=>toast("좌석 위치를 저장했습니다.")).catch(err=>alert(err.message));};});
   root.querySelectorAll("[data-seat-student]").forEach(card=>{card.ondragstart=()=>{dragIndex=Number(card.dataset.monitorSlot);draggedStudentId=card.dataset.seatStudent};card.ondragend=()=>{dragIndex=null;draggedStudentId=null};});
-  $("saveSeatOrderBtn").onclick=async()=>{try{const current=layoutSlotsForClass(cls);await saveSeatLayout(cls,cols,current.filter(Boolean),current);toast("좌석 배치를 저장했습니다.");}catch(err){alert(err.message);}};
+  $("saveSeatOrderBtn").onclick=async()=>{try{const current=layoutSlotsForClass(cls);await saveSeatLayout(cls,cols,verticalStudentOrder(current,cols),current);toast("좌석 배치를 저장했습니다.");}catch(err){alert(err.message);}};
 }
 function downloadAssessmentCsv(){
   const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a)return;const rosterMap=new Map(students.map(s=>[String(s.studentId),s]));
@@ -1048,11 +1105,13 @@ function bind(){
   $("closeRosterDialog").onclick=()=>$("rosterDialog").close();$("cancelRosterBtn").onclick=()=>$("rosterDialog").close();
   $("closeSeatEditorBtn").onclick=()=>$("rosterDialog").close();$("backToRosterListBtn").onclick=()=>setRosterTab("list");
   document.querySelectorAll("[data-roster-tab]").forEach(b=>b.onclick=()=>setRosterTab(b.dataset.rosterTab));
-  $("rosterClass").onchange=loadRosterDialogText;$("rosterColumns").onchange=renderSeatEditor;if($("rosterFile"))$("rosterFile").onchange=importRosterFile;$("applyRosterBtn").onclick=applyRoster;
-  $("seatResetBtn").onclick=()=>{if(confirm("현재 좌석을 학번 오름차순으로 다시 배치할까요? 아직 저장되지는 않습니다."))resetSeatEditorSlots();};
+  $("rosterClass").onchange=loadRosterDialogText;$("rosterColumns").onchange=()=>{const newCols=seatLineCount($("rosterColumns").value),ids=verticalStudentOrder(seatEditorSlots,seatEditorLineCount);seatEditorSlots=buildVerticalLineSlots(ids,newCols);seatEditorLineCount=newCols;renderSeatEditor();toast(`세로줄 수를 ${newCols}개로 바꿔 세로줄 순서를 유지해 다시 배치했습니다.`);};if($("rosterFile"))$("rosterFile").onchange=importRosterFile;$("applyRosterBtn").onclick=applyRoster;
+  $("seatResetBtn").onclick=()=>{if(confirm("현재 좌석을 학번 오름차순으로, 세로줄을 따라 앞→뒤 순서로 다시 배치할까요? 아직 저장되지는 않습니다."))resetSeatEditorSlots();};
   $("seatAddBlankBtn").onclick=()=>{seatEditorSlots.push(null);renderSeatEditor();};
-  $("seatAddRowBtn").onclick=()=>{const cols=Number($("rosterColumns").value||5);for(let i=0;i<cols;i++)seatEditorSlots.push(null);renderSeatEditor();};
-  $("seatTrimBlanksBtn").onclick=()=>{while(seatEditorSlots.length&&seatEditorSlots[seatEditorSlots.length-1]===null)seatEditorSlots.pop();renderSeatEditor();};
+  $("seatAddRowBtn").onclick=()=>{const cols=seatLineCount($("rosterColumns").value);for(let i=0;i<cols;i++)seatEditorSlots.push(null);renderSeatEditor();};
+  $("seatTrimBlanksBtn").onclick=()=>{const cols=seatLineCount($("rosterColumns").value);while(seatEditorSlots.length>=cols&&seatEditorSlots.slice(-cols).every(v=>v===null))seatEditorSlots.splice(-cols,cols);renderSeatEditor();};
+  $("seatSideBtn").onclick=()=>{$("seatLeftSide").value=seatEditorLeftSide;$("seatRightSide").value=seatEditorRightSide;$("seatSidePanel").classList.toggle("hidden");};
+  $("seatSwapSidesBtn").onclick=swapSeatSides;$("seatSideDoneBtn").onclick=applySeatSideSettings;
   $("saveSeatLayoutBtn").onclick=saveSeatEditor;
   $("closeStudentTestDialog").onclick=()=>$("studentTestDialog").close();$("cancelStudentTestBtn").onclick=()=>$("studentTestDialog").close();
   $("testAssessmentSelect").onchange=refreshStudentTestSelectors;$("testClassSelect").onchange=refreshStudentTestSelectors;$("startStudentTestBtn").onclick=startStudentPreview;
