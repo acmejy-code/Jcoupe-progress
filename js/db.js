@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.5.3";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.5.3";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.0";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.0";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -774,10 +774,12 @@ function normalizeAssessment(assessment){
     accessCode:String(assessment.accessCode||"").trim(),
     targetClasses:Array.isArray(assessment.targetClasses)?assessment.targetClasses.map(String).filter(Boolean):[],
     durationMinutes:Math.max(0,Number(assessment.durationMinutes||0)),
+    timeExtensionMinutes:Math.max(0,Number(assessment.timeExtensionMinutes||0)),
+    startedAt:assessment.startedAt||null,
     status:["DRAFT","OPEN","CLOSED"].includes(String(assessment.status))?String(assessment.status):"DRAFT",
     questions,
     projectId:activeProjectId,
-    createdAt:String(assessment.createdAt||new Date().toISOString()),
+    createdAt:assessment.createdAt||new Date().toISOString(),
     updatedAt:new Date().toISOString()
   };
 }
@@ -813,6 +815,8 @@ async function publishAssessmentPublic(assessment){
     status:a.status,
     targetClasses:a.targetClasses,
     durationMinutes:a.durationMinutes,
+    timeExtensionMinutes:a.timeExtensionMinutes||0,
+    startedAt:a.startedAt||null,
     questionCount:a.questions.length,
     updatedAt:firebase.fsMod.serverTimestamp()
   },{merge:true});
@@ -899,10 +903,98 @@ export async function setAssessmentStatus(assessmentId,status){
   const ref=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId));
   const snap=await firebase.fsMod.getDoc(ref);
   if(!snap.exists()) throw new Error("수행평가를 찾을 수 없습니다.");
-  const a=normalizeAssessment({id:snap.id,...snap.data(),status});
-  await firebase.fsMod.setDoc(ref,a,{merge:true});
-  await publishAssessmentPublic(a);
-  return a;
+  const before={id:snap.id,...snap.data()};
+  const a=normalizeAssessment({...before,status});
+  await ensurePublicCourseShell();
+
+  if(status==="OPEN"){
+    const privatePayload={...a,status:"OPEN",timeExtensionMinutes:0,startedAt:firebase.fsMod.serverTimestamp(),updatedAt:new Date().toISOString()};
+    const batch=firebase.fsMod.writeBatch(db);
+    batch.set(ref,privatePayload,{merge:true});
+    batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id),{
+      ownerUid:currentUser.uid,assessmentId:a.id,title:a.title,description:a.description,status:"OPEN",
+      targetClasses:a.targetClasses,durationMinutes:a.durationMinutes,timeExtensionMinutes:0,
+      startedAt:firebase.fsMod.serverTimestamp(),questionCount:a.questions.length,updatedAt:firebase.fsMod.serverTimestamp()
+    },{merge:true});
+    batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id,"content","main"),{
+      assessmentId:a.id,title:a.title,instructions:a.instructions,questions:a.questions,updatedAt:firebase.fsMod.serverTimestamp()
+    },{merge:true});
+    await batch.commit();
+    return {...a,status:"OPEN",timeExtensionMinutes:0};
+  }
+
+  const payload={...a,status,updatedAt:new Date().toISOString()};
+  await firebase.fsMod.setDoc(ref,payload,{merge:true});
+  await publishAssessmentPublic(payload);
+  return payload;
+}
+
+export async function extendAssessmentTime(assessmentId,minutes){
+  requireAssessmentCloud();
+  const add=Math.max(0,Number(minutes||0));
+  if(!add)return;
+  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId));
+  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",String(assessmentId));
+  const batch=firebase.fsMod.writeBatch(db);
+  batch.update(privateRef,{timeExtensionMinutes:firebase.fsMod.increment(add),updatedAt:new Date().toISOString()});
+  batch.update(publicRef,{timeExtensionMinutes:firebase.fsMod.increment(add),updatedAt:firebase.fsMod.serverTimestamp()});
+  await batch.commit();
+}
+
+export async function extendAssessmentStudentTime(assessmentId,studentId,minutes){
+  requireAssessmentCloud();
+  const add=Math.max(0,Number(minutes||0));
+  if(!add)return;
+  const ref=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts",String(studentId));
+  await firebase.fsMod.updateDoc(ref,{extraMinutes:firebase.fsMod.increment(add),lastTeacherActionAt:firebase.fsMod.serverTimestamp()});
+}
+
+export async function reopenAssessmentAttempt(assessmentId,studentId){
+  requireAssessmentCloud();
+  const ref=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts",String(studentId));
+  await firebase.fsMod.updateDoc(ref,{
+    status:"IN_PROGRESS",
+    reopenedAt:firebase.fsMod.serverTimestamp(),
+    reopenCount:firebase.fsMod.increment(1),
+    autoSubmitted:false,
+    lastTeacherActionAt:firebase.fsMod.serverTimestamp()
+  });
+}
+
+function tsMillis(v){
+  try{
+    if(!v)return 0;
+    if(typeof v.toMillis==="function")return v.toMillis();
+    if(typeof v.toDate==="function")return v.toDate().getTime();
+    const d=new Date(v);return Number.isNaN(d.getTime())?0:d.getTime();
+  }catch{return 0;}
+}
+
+export async function finalizeExpiredAssessmentAttempts(assessmentId){
+  requireAssessmentCloud();
+  const aRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId));
+  const aSnap=await firebase.fsMod.getDoc(aRef);
+  if(!aSnap.exists())return 0;
+  const a=aSnap.data();
+  const started=tsMillis(a.startedAt);
+  if(!started||!Number(a.durationMinutes||0))return 0;
+  const globalMinutes=Number(a.durationMinutes||0)+Number(a.timeExtensionMinutes||0);
+  const now=Date.now();
+  const attempts=await firebase.fsMod.getDocs(firebase.fsMod.collection(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts"));
+  const expired=attempts.docs.filter(d=>{
+    const x=d.data();
+    if(x.status==="SUBMITTED")return false;
+    const deadline=started+(globalMinutes+Number(x.extraMinutes||0))*60000;
+    return now>=deadline;
+  });
+  for(let i=0;i<expired.length;i+=400){
+    const batch=firebase.fsMod.writeBatch(db);
+    expired.slice(i,i+400).forEach(d=>batch.update(d.ref,{
+      status:"SUBMITTED",submittedAt:firebase.fsMod.serverTimestamp(),autoSubmitted:true,lastSeenAt:firebase.fsMod.serverTimestamp()
+    }));
+    await batch.commit();
+  }
+  return expired.length;
 }
 
 export async function deleteAssessment(assessmentId){

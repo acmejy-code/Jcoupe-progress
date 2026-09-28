@@ -1,4 +1,4 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.5.3";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.0";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -7,8 +7,9 @@ import {
   setActiveProject, getActiveProjectId, getProjects, saveProject, archiveProject,
   publishStudentPortalData, studentPortalUrl,
   replaceStudentsForClass, saveSeatLayout, upsertAssessment, setAssessmentStatus, deleteAssessment,
-  watchAssessmentAttempts, resetAssessmentRun
-} from "./db.js?v=2.5.3";
+  watchAssessmentAttempts, resetAssessmentRun, extendAssessmentTime, extendAssessmentStudentTime,
+  reopenAssessmentAttempt, finalizeExpiredAssessmentAttempts
+} from "./db.js?v=2.6.0";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -55,6 +56,8 @@ let seatEditorRightSide="NONE";
 let seatEditorDepthCount=5;
 let previewPayload=null;
 let previewWindow=null;
+let monitorControlStudentId=null;
+let assessmentDeadlineBusy=false;
 
 function toast(msg){
   $("toast").textContent=msg;
@@ -96,6 +99,37 @@ function latestOtherRecord(cls,beforeDate=null){
   if(beforeDate) arr=arr.filter(r=>r.date<=beforeDate);
   arr.sort((a,b)=>a.date.localeCompare(b.date)||Number(a.period)-Number(b.period));
   return arr[arr.length-1]||null;
+}
+
+function nextScheduledSlotAfterRecord(record){
+  if(!record||!activeProject)return null;
+  const end=activeProject.semesterEnd||record.date;
+  let d=parseLocalDate(record.date);
+  const max=370;
+  for(let i=0;i<max;i++){
+    const date=toYmd(d);
+    if(date>end)break;
+    const slots=scheduledSlots(date).filter(s=>String(s.className)===String(record.className)).sort((a,b)=>Number(a.period)-Number(b.period));
+    for(const s of slots){
+      if(date===record.date&&Number(s.period)<=Number(record.period))continue;
+      const existing=records.find(r=>r.date===date&&String(r.className)===String(record.className)&&String(r.period)===String(s.period));
+      if(existing?.status==="schedule_hidden"||existing?.status==="cancelled")continue;
+      return {date,className:record.className,period:Number(s.period)};
+    }
+    d.setDate(d.getDate()+1);
+  }
+  return null;
+}
+function latestClassRecordBeforeSlot(cls,date,period){
+  const arr=sortedClassRecords(cls).filter(r=>r.date<date||(r.date===date&&Number(r.period)<Number(period)));
+  return arr[arr.length-1]||null;
+}
+function nextStartPreviewForSlot(date,className,period){
+  const prev=latestClassRecordBeforeSlot(className,date,period);
+  if(!prev?.nextStart)return "";
+  const next=nextScheduledSlotAfterRecord(prev);
+  if(!next)return "";
+  return next.date===date&&String(next.className)===String(className)&&Number(next.period)===Number(period)?String(prev.nextStart):"";
 }
 
 function setView(name){
@@ -252,7 +286,10 @@ function renderCalendar(){
     scheduledSlots(date).filter(s=>calendarFilter==="ALL"||s.className===calendarFilter).sort((a,b)=>a.period-b.period).forEach(s=>{
       if(existingScheduledRecord(date,s.className,s.period))return;
       const el=document.createElement("div");el.className=`slot ${s.className}`;
-      const main=document.createElement("div");main.className="slot-main";main.textContent=`＋ ${s.className}반 ${s.period}교시`;main.title="눌러서 실제 수업 기록";main.onclick=()=>openRecord({date,className:s.className,period:s.period});
+      const preview=nextStartPreviewForSlot(date,s.className,s.period);
+      const main=document.createElement("div");main.className="slot-main";
+      main.innerHTML=`<span>＋ ${esc(s.className)}반 ${s.period}교시</span>${preview?`<small class="slot-next-preview">↪ 다음: ${esc(preview)}</small>`:""}`;
+      main.title="눌러서 실제 수업 기록";main.onclick=()=>openRecord({date,className:s.className,period:s.period});
       const hide=document.createElement("button");hide.className="slot-hide";hide.type="button";hide.textContent="×";hide.title="이 날 예정 수업 숨기기";hide.onclick=async e=>{e.stopPropagation();await hideScheduledSlot(date,s.className,s.period);};
       el.append(main,hide);cell.appendChild(el);
     });
@@ -786,14 +823,34 @@ function orderedStudents(cls){
   const map=new Map(classStudents(cls).map(s=>[String(s.studentId),s]));
   return layoutSlotsForClass(cls).filter(Boolean).map(id=>map.get(String(id))).filter(Boolean);
 }
+function timestampMs(v){
+  try{
+    if(!v)return 0;
+    if(typeof v.toMillis==="function")return v.toMillis();
+    if(typeof v.toDate==="function")return v.toDate().getTime();
+    const d=new Date(v);return Number.isNaN(d.getTime())?0:d.getTime();
+  }catch{return 0;}
+}
+function assessmentDeadlineMs(a,attempt=null){
+  const started=timestampMs(a?.startedAt);
+  if(!started||!Number(a?.durationMinutes||0))return 0;
+  return started+(Number(a.durationMinutes||0)+Number(a.timeExtensionMinutes||0)+Number(attempt?.extraMinutes||0))*60000;
+}
+function formatRemaining(ms){
+  if(!Number.isFinite(ms)||ms<=0)return "00:00";
+  const total=Math.ceil(ms/1000),m=Math.floor(total/60),s=total%60;
+  return `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
 function statusInfo(studentId){
   const a=assessmentAttempts.find(x=>String(x.studentId||x.id)===String(studentId));
   if(!a)return {key:"NONE",label:"미접속",sub:"-"};
-  if(a.status==="SUBMITTED")return {key:"SUBMITTED",label:"제출완료",sub:fmtDateTime(a.submittedAt)};
+  if(a.status==="SUBMITTED")return {key:"SUBMITTED",label:a.autoSubmitted?"자동 제출":"제출완료",sub:fmtDateTime(a.submittedAt)};
   let ms=0; try{const d=a.lastSeenAt?.toDate?a.lastSeenAt.toDate():new Date(a.lastSeenAt);ms=Date.now()-d.getTime();}catch{}
-  if(ms>65000)return {key:"STALE",label:"연결이상",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
+  if(ms>100000)return {key:"STALE",label:"접속 이상",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
+  if(ms>45000)return {key:"WARNING",label:"연결 지연",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
   return {key:"IN_PROGRESS",label:"응시중",sub:a.lastSavedAt?`저장 ${fmtDateTime(a.lastSavedAt)}`:"접속 확인"};
 }
+
 function assessmentStatusLabel(v){return v==="OPEN"?"응시 중":v==="CLOSED"?"종료":"준비";}
 function fmtDateTime(v){
   if(!v)return "-"; try{const d=v?.toDate?v.toDate():new Date(v);if(Number.isNaN(d.getTime()))return "-";return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;}catch{return "-";}
@@ -1046,6 +1103,25 @@ function startAttemptWatch(){
   if(storageMode()!=="cloud"||!selectedAssessmentId){assessmentAttempts=[];return;}
   try{watchAssessmentAttempts(selectedAssessmentId,(rows,err)=>{if(err)return;assessmentAttempts=rows;renderAssessmentMonitor();});}catch(err){console.error(err);}
 }
+function monitorEventSummary(at){
+  const focus=Number(at?.focusLossCount||0),copy=Number(at?.copyCount||0),paste=Number(at?.pasteCount||0),right=Number(at?.contextMenuCount||0);
+  const bits=[];if(focus)bits.push(`이탈 ${focus}`);if(copy)bits.push(`복사 ${copy}`);if(paste)bits.push(`붙여넣기 ${paste}`);if(right)bits.push(`우클릭 ${right}`);
+  return bits.join(" · ");
+}
+function eventLabel(type){
+  return ({FOCUS_LOSS:"화면 이탈",COPY:"복사",PASTE:"붙여넣기",CONTEXT_MENU:"우클릭",OFFLINE:"오프라인",ONLINE:"재연결"})[type]||type||"이벤트";
+}
+function openMonitorControl(studentId){
+  const at=assessmentAttempts.find(x=>String(x.studentId||x.id)===String(studentId));
+  const st=students.find(x=>String(x.studentId)===String(studentId));
+  if(!at||!st)return;
+  monitorControlStudentId=String(studentId);
+  $("monitorStudentTitle").textContent=`${st.studentId} ${st.name}`;
+  const events=Array.isArray(at.eventLog)?[...at.eventLog].slice(-30).reverse():[];
+  $("monitorStudentMeta").innerHTML=`상태: <b>${esc(statusInfo(studentId).label)}</b> · 개인 추가시간 <b>${Number(at.extraMinutes||0)}분</b> · 재응시 ${Number(at.reopenCount||0)}회`;
+  $("monitorEventList").innerHTML=events.length?events.map(e=>`<div class="monitor-event-row"><b>${esc(eventLabel(e.type))}</b><span>${esc(e.at?new Date(e.at).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"-")}</span>${e.detail?`<small>${esc(e.detail)}</small>`:""}</div>`).join(""):`<div class="small muted">기록된 화면 이탈·복사·붙여넣기 이벤트가 없습니다.</div>`;
+  $("monitorStudentDialog").showModal();
+}
 function renderAssessmentMonitor(){
   const root=$("assessmentMonitor");if(!root)return;const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a){root.innerHTML="";return;}
   const cls=selectedMonitorClass||a.targetClasses?.[0]||projectClasses()[0]||"";selectedMonitorClass=cls;
@@ -1056,18 +1132,32 @@ function renderAssessmentMonitor(){
   const leftLabel=seatSideText(layout?.leftSide),rightLabel=seatSideText(layout?.rightSide);
   const leftMarker=leftLabel?`<div class="seat-side-marker ${normalizeSeatSide(layout?.leftSide).toLowerCase()}">${esc(leftLabel)}</div>`:"";
   const rightMarker=rightLabel?`<div class="seat-side-marker ${normalizeSeatSide(layout?.rightSide).toLowerCase()}">${esc(rightLabel)}</div>`:"";
-  const seatHtml=slots.map((id,index)=>{const row=(index%depth)+1,col=Math.floor(index/depth)+1,pos=`style="grid-column:${col};grid-row:${row}"`;if(!id)return `<div class="seat-empty-monitor" ${pos} data-monitor-slot="${index}">빈 자리</div>`;const s=studentMap.get(String(id));if(!s)return `<div class="seat-empty-monitor" ${pos}>빈 자리</div>`;const st=statusInfo(s.studentId);return `<div class="seat-card status-${st.key.toLowerCase()}" ${pos} draggable="true" data-seat-student="${esc(s.studentId)}" data-monitor-slot="${index}"><div class="seat-id">${esc(s.studentId)}</div><strong>${esc(s.name)}</strong><span>${st.label}</span><small>${esc(st.sub)}</small></div>`;}).join("");
-  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">세로 한 줄 ${depth}석 · 좌우 ${cols}열 · 저장한 실제 교실 좌석(빈 자리 포함)과 창가 방향을 그대로 표시 · Firestore 상태 변경 즉시 반영 · 화면 상태 10초마다 재계산</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>제출 ${count("SUBMITTED")}</span><span>연결이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-room-layout">${leftMarker}<div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr));grid-template-rows:repeat(${depth},auto)">${seatHtml}</div>${rightMarker}</div><div class="seat-tools"><span class="small muted">좌석 수정은 [학생 명단·좌석] → [좌석 배치]에서 하는 것을 권장합니다. 이 화면에서도 학생 카드를 드래그하여 임시 조정 후 저장할 수 있습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
+  const seatHtml=slots.map((id,index)=>{
+    const row=(index%depth)+1,col=Math.floor(index/depth)+1,pos=`style="grid-column:${col};grid-row:${row}"`;
+    if(!id)return `<div class="seat-empty-monitor" ${pos} data-monitor-slot="${index}">빈 자리</div>`;
+    const s=studentMap.get(String(id));if(!s)return `<div class="seat-empty-monitor" ${pos}>빈 자리</div>`;
+    const st=statusInfo(s.studentId),at=assessmentAttempts.find(x=>String(x.studentId||x.id)===String(s.studentId)),events=monitorEventSummary(at);
+    const remain=assessmentDeadlineMs(a,at)?formatRemaining(assessmentDeadlineMs(a,at)-Date.now()):"";
+    return `<div class="seat-card status-${st.key.toLowerCase()}" ${pos} draggable="true" data-seat-student="${esc(s.studentId)}" data-monitor-slot="${index}">
+      <button type="button" class="seat-monitor-more" data-monitor-control="${esc(s.studentId)}" title="감독 기록·시간 조정">⋯</button>
+      <div class="seat-id">${esc(s.studentId)}</div><strong>${esc(s.name)}</strong><span>${st.label}</span><small>${esc(st.sub)}</small>
+      ${remain&&at?.status!=="SUBMITTED"?`<small class="seat-remaining">남은 ${remain}</small>`:""}
+      ${events?`<small class="seat-integrity">${esc(events)}</small>`:""}
+    </div>`;
+  }).join("");
+  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">정상 신호는 초록, 45초 이상 지연은 노랑, 100초 이상 무응답일 때만 빨강으로 표시합니다. 화면 이탈·복사·붙여넣기는 학생 카드에 누적됩니다.</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>지연 ${count("WARNING")}</span><span>제출 ${count("SUBMITTED")}</span><span>접속이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-room-layout">${leftMarker}<div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr));grid-template-rows:repeat(${depth},auto)">${seatHtml}</div>${rightMarker}</div><div class="seat-tools"><span class="small muted">카드의 ⋯ 버튼에서 개인 추가시간과 재응시를 허용할 수 있습니다. 화면 이탈 기록은 감독 참고용이며 자동으로 부정행위로 확정하지 않습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
   let dragIndex=null;
   root.querySelectorAll("[data-monitor-slot]").forEach(slot=>{slot.ondragover=e=>e.preventDefault();slot.ondrop=e=>{e.preventDefault();const to=Number(slot.dataset.monitorSlot);if(dragIndex===null||to===dragIndex)return;const tmp=slots[to]??null;slots[to]=slots[dragIndex]??null;slots[dragIndex]=tmp;dragIndex=null;const ids=verticalStudentOrder(slots);saveSeatLayout(cls,depth,ids,slots).then(()=>toast("좌석 위치를 저장했습니다.")).catch(err=>alert(err.message));};});
-  root.querySelectorAll("[data-seat-student]").forEach(card=>{card.ondragstart=()=>{dragIndex=Number(card.dataset.monitorSlot);draggedStudentId=card.dataset.seatStudent};card.ondragend=()=>{dragIndex=null;draggedStudentId=null};});
+  root.querySelectorAll("[data-seat-student]").forEach(card=>{card.ondragstart=e=>{if(e.target.closest?.("[data-monitor-control]")){e.preventDefault();return;}dragIndex=Number(card.dataset.monitorSlot);draggedStudentId=card.dataset.seatStudent};card.ondragend=()=>{dragIndex=null;draggedStudentId=null};});
+  root.querySelectorAll("[data-monitor-control]").forEach(btn=>btn.onclick=e=>{e.stopPropagation();e.preventDefault();openMonitorControl(btn.dataset.monitorControl);});
   $("saveSeatOrderBtn").onclick=async()=>{try{const current=layoutSlotsForClass(cls);await saveSeatLayout(cls,depth,verticalStudentOrder(current),current);toast("좌석 배치를 저장했습니다.");}catch(err){alert(err.message);}};
 }
+
 function downloadAssessmentCsv(){
   const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a)return;const rosterMap=new Map(students.map(s=>[String(s.studentId),s]));
-  const qs=a.questions||[], headers=["학번","이름","반","상태","시작시각","제출시각",...qs.map((_,i)=>`문항${i+1}`)];
+  const qs=a.questions||[], headers=["학번","이름","반","상태","시작시각","제출시각","자동제출","화면이탈","복사","붙여넣기","개인추가시간",...qs.map((_,i)=>`문항${i+1}`)];
   const quote=v=>`"${String(v??"").replace(/"/g,'""')}"`;
-  const rows=assessmentAttempts.map(at=>{const st=rosterMap.get(String(at.studentId))||{};return [at.studentId,st.name||at.studentName||"",st.className||"",at.status||"",fmtDateTime(at.startedAt),fmtDateTime(at.submittedAt),...qs.map(q=>at.answers?.[q.id]||"")];});
+  const rows=assessmentAttempts.map(at=>{const st=rosterMap.get(String(at.studentId))||{};return [at.studentId,st.name||at.studentName||"",st.className||"",at.status||"",fmtDateTime(at.startedAt),fmtDateTime(at.submittedAt),at.autoSubmitted?"Y":"",Number(at.focusLossCount||0),Number(at.copyCount||0),Number(at.pasteCount||0),Number(at.extraMinutes||0),...qs.map(q=>at.answers?.[q.id]||"")];});
   const csv="\ufeff"+[headers,...rows].map(r=>r.map(quote).join(",")).join("\r\n");const blob=new Blob([csv],{type:"text/csv;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`${a.title||"수행평가"}_응답.csv`;link.click();URL.revokeObjectURL(url);
 }
 function refreshStudentTestSelectors(){
@@ -1137,15 +1227,47 @@ window.addEventListener("message",e=>{
   sendPreviewPayload();
 });
 
+function updateAdminAssessmentClock(){
+  const el=$("assessmentAdminTimer");if(!el)return;
+  const a=assessments.find(x=>x.id===selectedAssessmentId);
+  if(!a||a.status!=="OPEN"||!assessmentDeadlineMs(a)){el.textContent="시간 미시작";return;}
+  const ms=assessmentDeadlineMs(a)-Date.now();
+  el.textContent=ms>0?`남은 시간 ${formatRemaining(ms)}`:"기본 시험시간 종료";
+  el.classList.toggle("timer-warning",ms>0&&ms<=300000);
+  el.classList.toggle("timer-expired",ms<=0);
+}
+async function runExpiredFinalize(){
+  if(assessmentDeadlineBusy||storageMode()!=="cloud")return;
+  const a=assessments.find(x=>x.id===selectedAssessmentId);
+  if(!a||a.status!=="OPEN"||!assessmentDeadlineMs(a))return;
+  const hasExpired=assessmentAttempts.some(at=>at.status!=="SUBMITTED"&&assessmentDeadlineMs(a,at)&&Date.now()>=assessmentDeadlineMs(a,at));
+  if(!hasExpired)return;
+  assessmentDeadlineBusy=true;
+  try{
+    const n=await finalizeExpiredAssessmentAttempts(a.id);
+    if(n>0)toast(`시간이 끝난 ${n}명의 답안을 자동 제출했습니다.`);
+  }catch(err){console.warn("자동 제출 확인 실패",err);}finally{assessmentDeadlineBusy=false;}
+}
 function renderAssessments(){
   const root=$("view-assessments");if(!activeProject)return;
   if(storageMode()!=="cloud"){root.innerHTML=`<div class="card assessment-empty"><h2>수행평가 응시 관리</h2><p>학생 인증·실시간 감독·답안 수집은 Firestore를 사용하므로 Google 로그인 후 사용할 수 있습니다.</p></div>`;return;}
   if(!selectedAssessmentId||!assessments.some(a=>a.id===selectedAssessmentId))selectedAssessmentId=assessments[0]?.id||null;
   const selected=assessments.find(a=>a.id===selectedAssessmentId)||null;if(!selectedMonitorClass)selectedMonitorClass=selected?.targetClasses?.[0]||projectClasses()[0]||"";
-  root.innerHTML=`<div class="assessment-toolbar"><div><h2>수행평가 응시 관리</h2><div class="small muted">학생은 포털에서 학번·이름·응시코드로 입장합니다. 답안은 실시간으로 수집됩니다.</div></div><div class="assessment-actions"><button class="btn" id="manageRosterBtn">학생 명단·좌석</button><button class="btn" id="studentTestBtn">학생 화면 테스트</button><button class="btn primary" id="newAssessmentBtn">＋ 수행평가 만들기</button></div></div><div class="assessment-layout"><div class="assessment-list-panel card"><h3>평가 목록</h3><div class="assessment-list">${assessments.length?assessments.map(a=>`<button class="assessment-row ${a.id===selectedAssessmentId?"active":""}" data-assessment-id="${esc(a.id)}"><span><b>${esc(a.title)}</b><small>${esc((a.targetClasses||[]).join("·"))}반 · ${a.questions?.length||0}문항</small></span><em class="assessment-status ${String(a.status).toLowerCase()}">${assessmentStatusLabel(a.status)}</em></button>`).join(""):`<div class="empty">아직 만든 수행평가가 없습니다.</div>`}</div></div><div class="assessment-main">${selected?`<div class="card assessment-control"><div class="assessment-control-head"><div><div class="label">${assessmentStatusLabel(selected.status)}</div><h3>${esc(selected.title)}</h3><p>${esc(selected.description||"학생 안내 없음")}</p></div><div class="code-box"><span>응시코드</span><strong>${esc(selected.accessCode)}</strong></div></div><div class="assessment-control-actions"><button class="btn" id="editAssessmentBtn">수정</button>${selected.status!=="OPEN"?`<button class="btn success-btn" id="openAssessmentBtn">평가 시작</button>`:`<button class="btn danger" id="closeAssessmentBtn2">평가 종료</button>`}<button class="btn" id="exportAssessmentBtn">응답 CSV</button><button class="btn" id="resetAssessmentBtn">테스트 기록 초기화</button><label class="monitor-class-label">감독 반 <select id="monitorClassSelect">${(selected.targetClasses||[]).map(c=>`<option value="${esc(c)}" ${c===selectedMonitorClass?"selected":""}>${esc(c)}반</option>`).join("")}</select></label></div></div><div id="assessmentMonitor" class="card assessment-monitor"></div>`:`<div class="card assessment-empty"><b>수행평가를 만들어 주세요.</b></div>`}</div></div>`;
+  const timer=selected?.status==="OPEN"?`<div class="assessment-admin-time"><b id="assessmentAdminTimer">남은 시간 계산 중</b><span>시험 ${Number(selected.durationMinutes||0)}분${Number(selected.timeExtensionMinutes||0)?` + 전체 연장 ${Number(selected.timeExtensionMinutes)}분`:""}</span></div>`:"";
+  root.innerHTML=`<div class="assessment-toolbar"><div><h2>수행평가 응시 관리</h2><div class="small muted">교사가 평가를 시작한 시각부터 모든 학생에게 동일한 시험시간이 적용됩니다. 학생 답안은 자동 저장되고 시간 종료 시 자동 제출됩니다.</div></div><div class="assessment-actions"><button class="btn" id="manageRosterBtn">학생 명단·좌석</button><button class="btn" id="studentTestBtn">학생 화면 테스트</button><button class="btn primary" id="newAssessmentBtn">＋ 수행평가 만들기</button></div></div><div class="assessment-layout"><div class="assessment-list-panel card"><h3>평가 목록</h3><div class="assessment-list">${assessments.length?assessments.map(a=>`<button class="assessment-row ${a.id===selectedAssessmentId?"active":""}" data-assessment-id="${esc(a.id)}"><span><b>${esc(a.title)}</b><small>${esc((a.targetClasses||[]).join("·"))}반 · ${a.questions?.length||0}문항 · ${Number(a.durationMinutes||0)}분</small></span><em class="assessment-status ${String(a.status).toLowerCase()}">${assessmentStatusLabel(a.status)}</em></button>`).join(""):`<div class="empty">아직 만든 수행평가가 없습니다.</div>`}</div></div><div class="assessment-main">${selected?`<div class="card assessment-control"><div class="assessment-control-head"><div><div class="label">${assessmentStatusLabel(selected.status)}</div><h3>${esc(selected.title)}</h3><p>${esc(selected.description||"학생 안내 없음")}</p></div><div class="assessment-control-side"><div class="code-box"><span>응시코드</span><strong>${esc(selected.accessCode)}</strong></div>${timer}</div></div><div class="assessment-control-actions"><button class="btn" id="editAssessmentBtn">수정</button>${selected.status!=="OPEN"?`<button class="btn success-btn" id="openAssessmentBtn">평가 시작</button>`:`<button class="btn danger" id="closeAssessmentBtn2">평가 종료</button><button class="btn" id="extendAssessment5Btn">전체 +5분</button><button class="btn" id="extendAssessment10Btn">전체 +10분</button>`}<button class="btn" id="exportAssessmentBtn">응답 CSV</button><button class="btn" id="resetAssessmentBtn">테스트 기록 초기화</button><label class="monitor-class-label">감독 반 <select id="monitorClassSelect">${(selected.targetClasses||[]).map(c=>`<option value="${esc(c)}" ${c===selectedMonitorClass?"selected":""}>${esc(c)}반</option>`).join("")}</select></label></div></div><div id="assessmentMonitor" class="card assessment-monitor"></div>`:`<div class="card assessment-empty"><b>수행평가를 만들어 주세요.</b></div>`}</div></div>`;
   $("manageRosterBtn").onclick=openRosterDialog;$("studentTestBtn").onclick=openStudentTestDialog;$("newAssessmentBtn").onclick=()=>openAssessmentDialog();
   document.querySelectorAll("[data-assessment-id]").forEach(b=>b.onclick=()=>{selectedAssessmentId=b.dataset.assessmentId;assessmentAttempts=[];const aa=assessments.find(x=>x.id===selectedAssessmentId);selectedMonitorClass=aa?.targetClasses?.[0]||"";renderAssessments();startAttemptWatch();});
-  if(selected){$("editAssessmentBtn").onclick=()=>openAssessmentDialog(selected);const openBtn=$("openAssessmentBtn");if(openBtn)openBtn.onclick=async()=>{if(confirm("이 수행평가를 학생 포털에서 응시 가능 상태로 열까요?")){await setAssessmentStatus(selected.id,"OPEN");toast("수행평가를 시작했습니다.");}};const closeBtn=$("closeAssessmentBtn2");if(closeBtn)closeBtn.onclick=async()=>{if(confirm("새로운 학생의 입장을 막고 평가를 종료할까요?\n이미 입장한 학생은 저장·제출을 계속할 수 있습니다.")){await setAssessmentStatus(selected.id,"CLOSED");toast("수행평가를 종료했습니다.");}};$("exportAssessmentBtn").onclick=downloadAssessmentCsv;$("resetAssessmentBtn").onclick=async()=>{if(confirm("이 평가의 학생 응시 기록과 인증 세션을 모두 삭제할까요?\n시험 전 시뮬레이션 기록 초기화 용도입니다.")){const n=await resetAssessmentRun(selected.id);assessmentAttempts=[];toast(`${n}개 응시 기록을 초기화했습니다.`);}};$("monitorClassSelect").onchange=e=>{selectedMonitorClass=e.target.value;renderAssessmentMonitor();};renderAssessmentMonitor();}
+  if(selected){
+    $("editAssessmentBtn").onclick=()=>openAssessmentDialog(selected);
+    const openBtn=$("openAssessmentBtn");if(openBtn)openBtn.onclick=async()=>{if(confirm(`이 수행평가를 지금 시작할까요?\n\n시작 버튼을 누르는 순간부터 모든 학생에게 ${Number(selected.durationMinutes||0)}분의 공통 시험시간이 시작됩니다.`)){await setAssessmentStatus(selected.id,"OPEN");toast("수행평가 시험시간을 시작했습니다.");}};
+    const closeBtn=$("closeAssessmentBtn2");if(closeBtn)closeBtn.onclick=async()=>{if(confirm("새로운 학생의 입장을 막고 평가를 종료할까요?\n이미 제출된 답안은 유지됩니다.")){await setAssessmentStatus(selected.id,"CLOSED");toast("수행평가를 종료했습니다.");}};
+    const ex5=$("extendAssessment5Btn");if(ex5)ex5.onclick=async()=>{await extendAssessmentTime(selected.id,5);toast("전체 시험시간을 5분 연장했습니다.");};
+    const ex10=$("extendAssessment10Btn");if(ex10)ex10.onclick=async()=>{await extendAssessmentTime(selected.id,10);toast("전체 시험시간을 10분 연장했습니다.");};
+    $("exportAssessmentBtn").onclick=downloadAssessmentCsv;
+    $("resetAssessmentBtn").onclick=async()=>{if(confirm("이 평가의 학생 응시 기록과 인증 세션을 모두 삭제할까요?\n시험 전 시뮬레이션 기록 초기화 용도입니다.")){const n=await resetAssessmentRun(selected.id);assessmentAttempts=[];toast(`${n}개 응시 기록을 초기화했습니다.`);}};
+    $("monitorClassSelect").onchange=e=>{selectedMonitorClass=e.target.value;renderAssessmentMonitor();};
+    renderAssessmentMonitor();updateAdminAssessmentClock();
+  }
 }
 
 function renderProjects(){
@@ -1214,6 +1336,11 @@ function bind(){
   $("closeMaterialDialog").onclick=()=>$("materialDialog").close();$("cancelMaterialBtn").onclick=()=>$("materialDialog").close();$("materialForm").onsubmit=saveMaterialForm;$("deleteMaterialBtn").onclick=deleteEditingMaterial;
   $("closeNoticeDialog").onclick=()=>$("noticeDialog").close();$("cancelNoticeBtn").onclick=()=>$("noticeDialog").close();$("noticeForm").onsubmit=saveNoticeForm;$("addNoticeDriveBtn").onclick=addNoticeDriveAttachment;$("deleteNoticeBtn").onclick=deleteEditingNotice;
   $("closeAssessmentDialog").onclick=()=>$("assessmentDialog").close();$("cancelAssessmentBtn").onclick=()=>$("assessmentDialog").close();$("assessmentForm").onsubmit=saveAssessmentForm;$("addQuestionBtn").onclick=()=>addQuestionEditor({});$("generateAccessCodeBtn").onclick=()=>$("assessmentAccessCode").value=generateAccessCode();$("deleteAssessmentBtn").onclick=async()=>{if(!editingAssessmentId)return;if(confirm("이 수행평가를 삭제할까요?")){try{await deleteAssessment(editingAssessmentId);$("assessmentDialog").close();toast("수행평가를 삭제했습니다.");}catch(err){alert(err.message);}}};
+  $("closeMonitorStudentDialog").onclick=()=>$("monitorStudentDialog").close();
+  $("monitorAdd5Btn").onclick=async()=>{if(!monitorControlStudentId)return;await extendAssessmentStudentTime(selectedAssessmentId,monitorControlStudentId,5);toast("해당 학생에게 5분을 추가했습니다.");$("monitorStudentDialog").close();};
+  $("monitorAdd10Btn").onclick=async()=>{if(!monitorControlStudentId)return;await extendAssessmentStudentTime(selectedAssessmentId,monitorControlStudentId,10);toast("해당 학생에게 10분을 추가했습니다.");$("monitorStudentDialog").close();};
+  $("monitorReopenBtn").onclick=async()=>{if(!monitorControlStudentId)return;if(confirm("이 학생의 제출 상태를 다시 응시중으로 열까요?")){await reopenAssessmentAttempt(selectedAssessmentId,monitorControlStudentId);toast("재응시를 허용했습니다.");$("monitorStudentDialog").close();}};
+
   $("closeRosterDialog").onclick=()=>$("rosterDialog").close();$("cancelRosterBtn").onclick=()=>$("rosterDialog").close();
   $("closeSeatEditorBtn").onclick=()=>$("rosterDialog").close();$("backToRosterListBtn").onclick=()=>setRosterTab("list");
   document.querySelectorAll("[data-roster-tab]").forEach(b=>b.onclick=()=>setRosterTab(b.dataset.rosterTab));
@@ -1272,4 +1399,5 @@ initDataLayer({
   }
 });
 setView("today");
-setInterval(()=>{if(document.getElementById("view-assessments")?.classList.contains("active"))renderAssessmentMonitor();},10000);
+setInterval(()=>{if(document.getElementById("view-assessments")?.classList.contains("active")){renderAssessmentMonitor();updateAdminAssessmentClock();}runExpiredFinalize();},5000);
+setInterval(updateAdminAssessmentClock,1000);

@@ -89,3 +89,17 @@ dialog{border:0;border-radius:16px;padding:0;width:min(760px,calc(100% - 20px));
 @media(max-width:780px){.notice-admin-grid{grid-template-columns:1fr}}
 
 .notice-drive-fields{display:grid;gap:8px;margin-bottom:7px}.notice-drive-fields .inline-field{align-items:center}.notice-file-row a{font-size:11px;color:#2563eb;text-decoration:none}.notice-file-row a:hover{text-decoration:underline}
+
+/* v2.6.0 수행평가 감독·시간 / 달력 다음 시작점 */
+.slot-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.slot-main>span{display:block}
+.slot-next-preview{display:block;font-size:9px;line-height:1.35;color:#475569;font-weight:800;white-space:normal;word-break:keep-all}
+.assessment-control-side{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap;justify-content:flex-end}
+.assessment-admin-time{min-width:150px;border:1px solid #cbd5e1;background:#f8fafc;border-radius:12px;padding:9px 12px;text-align:center;display:flex;flex-direction:column;justify-content:center}
+.assessment-admin-time b{font-size:14px;color:#0f172a}.assessment-admin-time span{font-size:10px;color:#64748b;margin-top:3px}
+.assessment-admin-time b.timer-warning{color:#b45309}.assessment-admin-time b.timer-expired{color:#be123c}
+.status-warning{border-color:#fbbf24;background:#fffbeb}.status-warning span{color:#92400e}
+.seat-card{position:relative}.seat-monitor-more{position:absolute;top:5px;right:6px;width:24px;height:24px;border:0;border-radius:7px;background:rgba(255,255,255,.85);color:#64748b;cursor:pointer;font-weight:900;line-height:1}.seat-monitor-more:hover{background:#e2e8f0;color:#0f172a}
+.seat-remaining{font-weight:900!important;color:#334155!important}.seat-integrity{margin-top:5px!important;padding:3px 5px;border-radius:6px;background:#fff7ed;color:#c2410c!important;font-weight:900!important}
+.monitor-control-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.monitor-event-list{display:grid;gap:7px;margin-top:14px;max-height:360px;overflow:auto}.monitor-event-row{display:grid;grid-template-columns:90px 95px 1fr;gap:8px;align-items:center;border:1px solid #e2e8f0;background:#f8fafc;border-radius:10px;padding:8px 10px;font-size:11px}.monitor-event-row b{color:#0f172a}.monitor-event-row span{color:#475569}.monitor-event-row small{color:#64748b}
+@media(max-width:700px){.assessment-control-side{justify-content:flex-start}.monitor-event-row{grid-template-columns:1fr 1fr}.monitor-event-row small{grid-column:1/-1}}
