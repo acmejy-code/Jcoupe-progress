@@ -3,7 +3,7 @@ import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
   upsertMaterial, deleteMaterialById, migrateLocalMaterialsToCloud, replaceAllMaterials,
-  upsertNotice, deleteNoticeById,
+  upsertNotice, deleteNoticeById, uploadNoticeAttachments, deleteNoticeAttachment,
   setActiveProject, getActiveProjectId, getProjects, saveProject, archiveProject,
   publishStudentPortalData, studentPortalUrl,
   replaceStudentsForClass, saveSeatLayout, upsertAssessment, setAssessmentStatus, deleteAssessment,
@@ -527,25 +527,19 @@ function formatBytes(bytes){
 }
 function renderNoticeFileLists(){
   const existing=$("noticeExistingAttachments");
-  if(!existing)return;
-  existing.innerHTML=noticeKeptAttachments.length?noticeKeptAttachments.map((a,i)=>`<div class="notice-file-row"><div><b>${esc(a.name||"첨부파일")}</b><span>${a.source==="GOOGLE_DRIVE"||a.driveUrl?"Google Drive":"링크"}</span>${a.url?`<a href="${esc(a.url)}" target="_blank" rel="noopener">열기</a>`:""}</div><button type="button" class="notice-file-remove" data-notice-attachment-remove="${i}">×</button></div>`).join(""):`<div class="small muted">등록된 Drive 첨부 없음</div>`;
-  existing.querySelectorAll("[data-notice-attachment-remove]").forEach(b=>b.onclick=()=>{noticeKeptAttachments.splice(Number(b.dataset.noticeAttachmentRemove),1);renderNoticeFileLists();});
-}
-function addNoticeDriveAttachment(){
-  if(noticeKeptAttachments.length>=5){alert("첨부파일은 한 공지에 최대 5개까지 등록할 수 있습니다.");return;}
-  const name=$("noticeDriveName").value.trim();
-  const rawUrl=$("noticeDriveUrl").value.trim();
-  if(!name){alert("학생에게 보일 첨부파일명을 입력해 주세요.");$("noticeDriveName").focus();return;}
-  if(!rawUrl){alert("Google Drive 공유 링크를 입력해 주세요.");$("noticeDriveUrl").focus();return;}
-  const links=driveLinks(rawUrl);
-  if(!links){alert("Google Drive 공유 링크에서 파일 ID를 찾지 못했습니다.\nDrive에서 ‘공유 → 링크 복사’로 받은 주소를 붙여 넣어 주세요.");return;}
-  if(noticeKeptAttachments.some(a=>String(a.url||a.driveUrl||"")===String(links.previewUrl)||String(a.driveUrl||"")===rawUrl)){alert("이미 등록된 Drive 첨부입니다.");return;}
-  noticeKeptAttachments.push({name,size:0,type:"GOOGLE_DRIVE",path:"",url:links.previewUrl,driveUrl:rawUrl,downloadUrl:links.downloadUrl,source:"GOOGLE_DRIVE"});
-  $("noticeDriveName").value="";$("noticeDriveUrl").value="";renderNoticeFileLists();
+  if(existing){
+    existing.innerHTML=noticeKeptAttachments.length?noticeKeptAttachments.map((a,i)=>`<div class="notice-file-row"><div><b>${esc(a.name||"첨부파일")}</b><span>${esc(formatBytes(a.size))}</span></div><button type="button" class="notice-file-remove" data-notice-attachment-remove="${i}">×</button></div>`).join(""):`<div class="small muted">기존 첨부파일 없음</div>`;
+    existing.querySelectorAll("[data-notice-attachment-remove]").forEach(b=>b.onclick=()=>{noticeKeptAttachments.splice(Number(b.dataset.noticeAttachmentRemove),1);renderNoticeFileLists();});
+  }
+  const chosen=$("noticeSelectedFiles");
+  if(chosen){
+    const files=Array.from($("noticeFiles")?.files||[]);
+    chosen.innerHTML=files.length?files.map(f=>`<div class="notice-file-row pending"><div><b>${esc(f.name)}</b><span>${esc(formatBytes(f.size))}</span></div><span class="notice-new-badge">새 파일</span></div>`).join(""):`<div class="small muted">새로 선택한 파일 없음</div>`;
+  }
 }
 function openNoticeDialog(notice=null){
   if(storageMode()!=="cloud"){
-    alert("공지 작성은 Google 로그인 후 사용할 수 있습니다.");
+    alert("공지 작성과 첨부파일 업로드는 Google 로그인 후 사용할 수 있습니다.");
     return;
   }
   editingNoticeId=notice?.id||null;
@@ -557,6 +551,7 @@ function openNoticeDialog(notice=null){
   $("noticePublished").value=notice?.isPublished===false?"false":"true";
   $("noticeTitle").value=notice?.title||"";
   $("noticeBody").value=notice?.body||"";
+  $("noticeFiles").value="";
   $("deleteNoticeBtn").classList.toggle("hidden",!notice);
   renderNoticeFileLists();
   $("noticeDialog").showModal();
@@ -566,20 +561,29 @@ async function saveNoticeForm(e){
   if(storageMode()!=="cloud"){alert("Google 로그인 후 공지를 저장해 주세요.");return;}
   const title=$("noticeTitle").value.trim(),body=$("noticeBody").value.trim();
   if(!title||!body){alert("공지 제목과 내용을 입력해 주세요.");return;}
-  if(noticeKeptAttachments.length>5){alert("첨부파일은 한 공지에 최대 5개까지 등록할 수 있습니다.");return;}
+  const files=Array.from($("noticeFiles").files||[]);
+  if(noticeKeptAttachments.length+files.length>5){alert("첨부파일은 한 공지에 최대 5개까지 등록할 수 있습니다.");return;}
+  const tooLarge=files.find(f=>f.size>20*1024*1024);if(tooLarge){alert(`${tooLarge.name} 파일이 20MB를 초과합니다.`);return;}
   const existing=notices.find(n=>String(n.id)===String(editingNoticeId));
   const id=editingNoticeId||makeId(), now=new Date().toISOString();
-  const saveBtn=$("saveNoticeBtn");saveBtn.disabled=true;saveBtn.textContent="저장 중...";
+  const saveBtn=$("saveNoticeBtn");saveBtn.disabled=true;saveBtn.textContent=files.length?"파일 업로드 중...":"저장 중...";
+  let uploaded=[];
   try{
-    const notice={id,projectId:activeProject.id,type:$("noticeType").value,title,body,isPublished:$("noticePublished").value==="true",attachments:noticeKeptAttachments.map(a=>({...a})),createdAt:existing?.createdAt||now,updatedAt:now};
+    if(files.length)uploaded=await uploadNoticeAttachments(id,files);
+    const notice={id,projectId:activeProject.id,type:$("noticeType").value,title,body,isPublished:$("noticePublished").value==="true",attachments:[...noticeKeptAttachments,...uploaded],createdAt:existing?.createdAt||now,updatedAt:now};
     await upsertNotice(notice);
+    const keptPaths=new Set(noticeKeptAttachments.map(a=>String(a.path||"")));
+    const removed=noticeOriginalAttachments.filter(a=>a?.path&&!keptPaths.has(String(a.path)));
+    for(const a of removed){try{await deleteNoticeAttachment(a.path);}catch(err){console.warn(err);}}
     $("noticeDialog").close();editingNoticeId=null;toast(`공지 저장 완료 · ${notice.isPublished?"학생 포털 공개":"비공개"}`);
   }catch(err){
-    alert("공지 저장 실패: "+err.message);
+    for(const a of uploaded){try{await deleteNoticeAttachment(a.path);}catch{}}
+    const storageHint=String(err?.code||"").startsWith("storage/")?"\n\nFirebase Storage가 활성화되어 있는지와 storage.rules 적용 여부를 확인해 주세요.":"";
+    alert("공지 저장 실패: "+err.message+storageHint);
   }finally{saveBtn.disabled=false;saveBtn.textContent="공지 저장";}
 }
 async function deleteEditingNotice(){
-  if(!editingNoticeId||!confirm("이 공지를 삭제할까요?\nGoogle Drive의 원본 파일은 삭제되지 않습니다."))return;
+  if(!editingNoticeId||!confirm("이 공지를 삭제할까요?\n첨부파일도 함께 삭제됩니다."))return;
   try{await deleteNoticeById(editingNoticeId);$("noticeDialog").close();editingNoticeId=null;toast("공지를 삭제했습니다.");}
   catch(err){alert("공지 삭제 실패: "+err.message);}
 }
@@ -589,7 +593,7 @@ function renderNotices(){
   const rows=notices.filter(n=>noticeTypeFilter==="ALL"||n.type===noticeTypeFilter).filter(n=>!q||[n.title,n.body,NOTICE_TYPES[n.type]||""].join(" ").toLowerCase().includes(q)).sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
   const filters=[["ALL","전체"],["ASSESSMENT","수행평가 공지"],["GENERAL","일반 공지"]].map(([v,l])=>`<button class="chip ${noticeTypeFilter===v?"active":""}" data-notice-type="${v}">${l}</button>`).join("");
   const list=rows.length?rows.map(n=>`<article class="notice-admin-card card"><div class="notice-admin-top"><div class="material-badges"><span class="notice-type-badge ${n.type==="ASSESSMENT"?"assessment":"general"}">${esc(NOTICE_TYPES[n.type]||"일반 공지")}</span>${n.isPublished!==false?`<span class="material-badge published">학생 공개</span>`:`<span class="material-badge private">비공개</span>`}${(n.attachments||[]).length?`<span class="material-badge type">첨부 ${(n.attachments||[]).length}</span>`:""}</div><button class="btn small-btn" data-notice-edit="${esc(n.id)}">수정</button></div><h3>${esc(n.title||"제목 없음")}</h3><p>${esc(n.body||"")}</p><div class="material-meta">수정 ${esc(fmtMaterialDate(n.updatedAt))}</div>${(n.attachments||[]).length?`<div class="notice-admin-attachments">${n.attachments.map(a=>`<a href="${esc(a.url)}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a>`).join("")}</div>`:""}</article>`).join(""):`<div class="card material-empty">등록된 공지가 없습니다.<br><span class="small muted">일반 공지 또는 수행평가 공지를 작성해 보세요.</span></div>`;
-  root.innerHTML=`<div class="material-head"><div><h2>공지 관리</h2><div class="small muted">학생 포털의 공지 메뉴에 일반 공지와 수행평가 공지를 게시합니다.</div></div><button class="btn primary" id="newNoticeBtn">＋ 새 공지 작성</button></div><div class="card notice-guide"><b>공지 운영</b><span>수행평가 안내·예시 문항은 ‘수행평가 공지’, 그 밖의 수업 안내는 ‘일반 공지’로 게시하세요. 첨부파일은 Google Drive 공유 링크로 최대 5개까지 연결할 수 있습니다.</span></div><div class="material-tools"><div class="filters">${filters}</div><input id="noticeSearchInput" value="${esc(noticeSearch)}" placeholder="공지 제목·내용 검색"/></div><div class="notice-admin-grid">${list}</div>`;
+  root.innerHTML=`<div class="material-head"><div><h2>공지 관리</h2><div class="small muted">학생 포털의 공지 메뉴에 일반 공지와 수행평가 공지를 게시합니다.</div></div><button class="btn primary" id="newNoticeBtn">＋ 새 공지 작성</button></div><div class="card notice-guide"><b>공지 운영</b><span>수행평가 안내·예시 문항은 ‘수행평가 공지’, 그 밖의 수업 안내는 ‘일반 공지’로 게시하세요. 첨부파일은 최대 5개까지 직접 올릴 수 있습니다.</span></div><div class="material-tools"><div class="filters">${filters}</div><input id="noticeSearchInput" value="${esc(noticeSearch)}" placeholder="공지 제목·내용 검색"/></div><div class="notice-admin-grid">${list}</div>`;
   $("newNoticeBtn").onclick=()=>openNoticeDialog();$("noticeSearchInput").oninput=e=>{noticeSearch=e.target.value;renderNotices();};root.querySelectorAll("[data-notice-type]").forEach(b=>b.onclick=()=>{noticeTypeFilter=b.dataset.noticeType;renderNotices();});root.querySelectorAll("[data-notice-edit]").forEach(b=>b.onclick=()=>openNoticeDialog(notices.find(n=>String(n.id)===String(b.dataset.noticeEdit))));
 }
 
@@ -1212,7 +1216,7 @@ function bind(){
   $("logoutBtn").onclick=()=>signOutGoogle();$("closeSettings").onclick=()=>$("settingsDialog").close();
   $("closeProjectDialog").onclick=()=>$("projectDialog").close();$("cancelProjectBtn").onclick=()=>$("projectDialog").close();$("projectForm").onsubmit=saveProjectForm;
   $("closeMaterialDialog").onclick=()=>$("materialDialog").close();$("cancelMaterialBtn").onclick=()=>$("materialDialog").close();$("materialForm").onsubmit=saveMaterialForm;$("deleteMaterialBtn").onclick=deleteEditingMaterial;
-  $("closeNoticeDialog").onclick=()=>$("noticeDialog").close();$("cancelNoticeBtn").onclick=()=>$("noticeDialog").close();$("noticeForm").onsubmit=saveNoticeForm;$("addNoticeDriveBtn").onclick=addNoticeDriveAttachment;$("deleteNoticeBtn").onclick=deleteEditingNotice;$("noticeFiles").onchange=renderNoticeFileLists;
+  $("closeNoticeDialog").onclick=()=>$("noticeDialog").close();$("cancelNoticeBtn").onclick=()=>$("noticeDialog").close();$("noticeForm").onsubmit=saveNoticeForm;$("deleteNoticeBtn").onclick=deleteEditingNotice;$("noticeFiles").onchange=renderNoticeFileLists;
   $("closeAssessmentDialog").onclick=()=>$("assessmentDialog").close();$("cancelAssessmentBtn").onclick=()=>$("assessmentDialog").close();$("assessmentForm").onsubmit=saveAssessmentForm;$("addQuestionBtn").onclick=()=>addQuestionEditor({});$("generateAccessCodeBtn").onclick=()=>$("assessmentAccessCode").value=generateAccessCode();$("deleteAssessmentBtn").onclick=async()=>{if(!editingAssessmentId)return;if(confirm("이 수행평가를 삭제할까요?")){try{await deleteAssessment(editingAssessmentId);$("assessmentDialog").close();toast("수행평가를 삭제했습니다.");}catch(err){alert(err.message);}}};
   $("closeRosterDialog").onclick=()=>$("rosterDialog").close();$("cancelRosterBtn").onclick=()=>$("rosterDialog").close();
   $("closeSeatEditorBtn").onclick=()=>$("rosterDialog").close();$("backToRosterListBtn").onclick=()=>setRosterTab("list");

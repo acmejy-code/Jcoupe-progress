@@ -8,6 +8,7 @@ const LEGACY_LOCAL_KEY = "doktogul_progress_v1_records";
 let firebase = null;
 let auth = null;
 let db = null;
+let storage = null;
 let currentUser = null;
 let unsubscribeRecords = null;
 let unsubscribeMaterials = null;
@@ -306,15 +307,17 @@ export async function initDataLayer({onRecords,onMaterials,onNotices,onStudents,
   }
 
   try{
-    const [appMod,authMod,fsMod]=await Promise.all([
+    const [appMod,authMod,fsMod,storageMod]=await Promise.all([
       import("https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js"),
       import("https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js"),
-      import("https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js")
+      import("https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js"),
+      import("https://www.gstatic.com/firebasejs/12.17.1/firebase-storage.js")
     ]);
     const app=appMod.initializeApp(firebaseConfig);
     auth=authMod.getAuth(app);
     db=fsMod.getFirestore(app);
-    firebase={authMod,fsMod};
+    storage=storageMod.getStorage(app);
+    firebase={authMod,fsMod,storageMod};
 
     authMod.onAuthStateChanged(auth, async user=>{
       currentUser=user||null;
@@ -538,10 +541,7 @@ function normalizeNotice(notice){
     size:Number(a?.size||0),
     type:String(a?.type||""),
     path:String(a?.path||""),
-    url:String(a?.url||""),
-    driveUrl:String(a?.driveUrl||""),
-    downloadUrl:String(a?.downloadUrl||""),
-    source:String(a?.source||((a?.driveUrl)?"GOOGLE_DRIVE":"LINK"))
+    url:String(a?.url||"")
   })).filter(a=>a.url):[];
   n.createdAt=String(n.createdAt||new Date().toISOString());
   n.updatedAt=String(n.updatedAt||new Date().toISOString());
@@ -567,6 +567,32 @@ async function syncPublicNotice(notice){
   else await firebase.fsMod.deleteDoc(ref).catch(()=>{});
   return n;
 }
+export async function uploadNoticeAttachments(noticeId,files){
+  requireNoticeCloud();
+  await ensurePublicCourseShell();
+  const list=Array.from(files||[]);
+  if(list.length>5) throw new Error("첨부파일은 한 공지에 최대 5개까지 선택할 수 있습니다.");
+  const tooLarge=list.find(f=>Number(f.size||0)>20*1024*1024);
+  if(tooLarge) throw new Error(`${tooLarge.name} 파일이 20MB를 초과합니다.`);
+  const results=[];
+  for(const file of list){
+    const safeName=String(file.name||"file").replace(/[\\/#?\[\]]/g,"_").slice(-160);
+    const unique=`${Date.now()}_${crypto.randomUUID?.()||Math.random().toString(36).slice(2)}_${safeName}`;
+    const path=`noticeAttachments/${activeProjectId}/${String(noticeId)}/${unique}`;
+    const ref=firebase.storageMod.ref(storage,path);
+    await firebase.storageMod.uploadBytes(ref,file,{contentType:file.type||"application/octet-stream"});
+    const url=await firebase.storageMod.getDownloadURL(ref);
+    results.push({name:String(file.name||safeName),size:Number(file.size||0),type:String(file.type||""),path,url});
+  }
+  return results;
+}
+export async function deleteNoticeAttachment(path){
+  requireNoticeCloud();
+  const clean=String(path||"").trim();
+  if(!clean)return;
+  try{await firebase.storageMod.deleteObject(firebase.storageMod.ref(storage,clean));}
+  catch(err){if(err?.code!=="storage/object-not-found")throw err;}
+}
 export async function upsertNotice(notice){
   requireNoticeCloud();
   const n=normalizeNotice(notice);
@@ -585,14 +611,19 @@ export async function upsertNotice(notice){
 export async function deleteNoticeById(id){
   requireNoticeCloud();
   const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"notices",String(id));
+  const snap=await firebase.fsMod.getDoc(privateRef);
+  const attachments=snap.exists()?(snap.data().attachments||[]):[];
   const batch=firebase.fsMod.writeBatch(db);
   batch.delete(privateRef);
   batch.delete(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"notices",String(id)));
   await batch.commit();
+  for(const a of attachments){
+    if(a?.path){try{await deleteNoticeAttachment(a.path);}catch(err){console.warn("notice attachment delete failed",err);}}
+  }
 }
 function requireNoticeCloud(){
-  if(storageMode()!=="cloud"||!currentUser||!firebase||!db){
-    throw new Error("공지 작성은 Google 로그인 상태에서 사용할 수 있습니다.");
+  if(storageMode()!=="cloud"||!currentUser||!firebase||!db||!storage){
+    throw new Error("공지 작성과 파일 첨부는 Google 로그인 상태에서 사용할 수 있습니다.");
   }
 }
 

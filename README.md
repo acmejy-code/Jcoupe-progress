@@ -1,24 +1,16 @@
-# JCOUP 수업 통합 제어 시스템 관리자 v2.5.1
+# JCOUP 수업 통합 제어 시스템 관리자 v2.5.0
 
-## 이번 변경
-- 공지 첨부파일을 Firebase Storage 직접 업로드 방식에서 **Google Drive 공유 링크 등록 방식**으로 변경
-- 기존 수업 자료실과 같은 무료 운영 방식 사용
-- 공지당 Drive 첨부 최대 5개
-- Drive 원본 파일은 공지를 수정/삭제해도 삭제되지 않음
-- Firebase Storage 활성화 및 `storage.rules` 게시가 **필요 없음**
-- 기존 공지/수행평가/좌석 배치/학생 테스트 새 창 기능 유지
+## 이번 버전
+- 기존 v2.4.3 좌석 배치·학생 테스트 새 창 유지
+- **공지 메뉴 추가**: 수행평가 공지 / 일반 공지
+- 공지 작성·수정·삭제·공개/비공개
+- 공지당 첨부파일 최대 5개, 파일당 최대 20MB 직접 업로드
+- 학생 포털 공지 자동 반영
 
-## 공지 첨부 사용법
-1. Google Drive에 파일 업로드
-2. 공유 설정을 `링크가 있는 모든 사용자` + `뷰어`로 설정
-3. 공지 작성 화면에서 학생에게 보일 파일명 입력
-4. Drive 공유 링크 붙여넣기
-5. `+ 첨부 추가` 후 공지 저장
+## 배포
+1. 관리자 저장소 `Jcoupe-progress`를 이 폴더 내용으로 전체 교체 후 Push
+2. Firebase Firestore Rules에 `firestore.rules` 적용
+3. Firebase Storage를 사용할 수 있도록 설정한 뒤 Storage Rules에 `storage.rules` 적용
+4. GitHub Pages 배포 완료 후 Ctrl+F5
 
-## Firebase
-- Firestore는 기존대로 사용합니다.
-- v2.5.0에서 추가된 공지용 `firestore.rules`는 게시되어 있어야 합니다.
-- Firebase Storage는 사용하지 않습니다.
-
-## 학생 포털
-학생 포털 v1.5.1은 수정할 필요가 없습니다. 공지 첨부의 `url` 필드를 그대로 열기 때문에 Drive 링크 방식과 호환됩니다.
+Firebase 프로젝트명 `doktogul-progress`는 변경하지 않습니다.
