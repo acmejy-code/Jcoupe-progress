@@ -709,17 +709,12 @@ async function publishAssessmentPublic(assessment){
   return a;
 }
 
-function buildVerticalLineSlots(ids,lineCount){
+function buildVerticalDepthSlots(ids,depthCount){
   const list=(ids||[]).filter(Boolean).map(String);
-  const cols=Math.min(8,Math.max(2,Number(lineCount||5)));
+  const depth=Math.min(8,Math.max(2,Number(depthCount||5)));
   if(!list.length)return [];
-  const rows=Math.ceil(list.length/cols),base=Math.floor(list.length/cols),extra=list.length%cols;
-  const slots=Array(rows*cols).fill(null);
-  let cursor=0;
-  for(let col=0;col<cols;col++){
-    const count=base+(col<extra?1:0);
-    for(let row=0;row<count;row++)slots[row*cols+col]=list[cursor++];
-  }
+  const cols=Math.ceil(list.length/depth),slots=Array(cols*depth).fill(null);
+  list.forEach((id,index)=>slots[index]=id);
   return slots;
 }
 
@@ -742,17 +737,18 @@ export async function replaceStudentsForClass(className,students){
   normalized.forEach(st=>batch.set(firebase.fsMod.doc(col,st.studentId),st));
   await batch.commit();
   const initialIds=normalized.map(s=>s.studentId);
-  await saveSeatLayout(cls,5,initialIds,buildVerticalLineSlots(initialIds,5));
+  await saveSeatLayout(cls,5,initialIds,buildVerticalDepthSlots(initialIds,5));
   return normalized.length;
 }
 
-export async function saveSeatLayout(className,columns,orderedStudentIds,slots=null,layoutMeta=null){
+export async function saveSeatLayout(className,seatsPerVerticalLine,orderedStudentIds,slots=null,layoutMeta=null){
   requireAssessmentCloud();
   const cls=String(className||"").trim();
-  const safeColumns=Math.min(8,Math.max(2,Number(columns||5)));
+  const safeDepth=Math.min(8,Math.max(2,Number(seatsPerVerticalLine||5)));
   const safeOrdered=(orderedStudentIds||[]).filter(Boolean).map(String);
-  const safeSlots=Array.isArray(slots)?slots.map(v=>v?String(v):null):buildVerticalLineSlots(safeOrdered,safeColumns);
-  const payload={className:cls,columns:safeColumns,verticalLines:safeColumns,flow:"VERTICAL_LINES",orderedStudentIds:safeOrdered,slots:safeSlots,updatedAt:new Date().toISOString()};
+  const safeSlots=Array.isArray(slots)?slots.map(v=>v?String(v):null):buildVerticalDepthSlots(safeOrdered,safeDepth);
+  const safeColumns=Math.max(1,Math.ceil(safeSlots.length/safeDepth));
+  const payload={className:cls,seatsPerVerticalLine:safeDepth,verticalDepth:safeDepth,columns:safeColumns,verticalLines:safeColumns,flow:"VERTICAL_DEPTH",orderedStudentIds:safeOrdered,slots:safeSlots,updatedAt:new Date().toISOString()};
   if(layoutMeta&&typeof layoutMeta==="object"){
     const normSide=v=>["CORRIDOR","OUTER"].includes(String(v||"").toUpperCase())?String(v).toUpperCase():"NONE";
     if("leftSide" in layoutMeta)payload.leftSide=normSide(layoutMeta.leftSide);
