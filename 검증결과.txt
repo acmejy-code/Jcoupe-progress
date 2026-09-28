@@ -1,41 +1,16 @@
-JCOUP 관리자 v2.5.0 정적 검증 결과
+JCOUP 관리자 v2.5.1 정적 검증 결과
 
-[신규 기능: 공지]
-- 상단 메뉴에 `공지` 추가
-- 공지 유형: 수행평가 공지 / 일반 공지
-- 공지 작성·수정·삭제·학생 공개/비공개 지원
-- 공지 제목·본문 검색 및 유형 필터 지원
-- 첨부파일 직접 업로드: 공지당 최대 5개, 파일당 최대 20MB
-- 기존 첨부파일 개별 제거 지원
-- 공개 공지는 publicCourses/{projectId}/notices에 즉시 반영
-- 학생 포털 전체 발행 시 공개 공지도 함께 재동기화
+- 기준: 관리자 v2.5.0 공지 메뉴 전체 기능
+- 변경: Firebase Storage 첨부 -> Google Drive 공유 링크 첨부
+- 학생 포털 수정 없음(v1.5.1 유지)
+- firebase-storage.js import 제거 확인
+- Firebase Storage 업로드/삭제 함수 제거 확인
+- notice Drive 파일명/공유링크 입력 UI 확인
+- 공지당 최대 5개 제한 유지
+- Firestore 공지 저장/공개 구조 유지
+- 수행평가/좌석/진도/자료실 기존 기능 유지
 
-[첨부파일]
-- Firebase Storage 경로: noticeAttachments/{projectId}/{noticeId}/...
-- 신규 storage.rules 포함
-- Storage Rules에서 publicCourses 문서의 ownerUid를 확인해 관리자만 업로드·삭제 허용
-- 학생 읽기는 공개
-
-[규칙]
-- firestore.rules에 publicCourses/{courseId}/notices/{noticeId} 공개 읽기/소유자 쓰기 규칙 추가
-- 기존 수행평가 sessions/attempts 규칙 유지
-
-[기존 기능 유지]
-- v2.4.3 세로 한 줄 좌석 수 방식
-- 좌우 복도쪽/외벽 창가 표시
-- 학생 테스트 새 창
-- 수행평가 생성·상태 변경·실시간 감독
-- 수업 진도/자료실/프로젝트 관리
-
-[정적 검사]
-- 관리자 app.js: node --check 통과
-- 관리자 db.js: node --check 통과
-- index.html ID 중복 없음
-- 관리자/학생 Firebase 프로젝트 ID 유지: doktogul-progress
-
-[실사용 확인 권장]
-1) Google 로그인
-2) Firebase Storage 활성화 및 storage.rules 게시
-3) 새 수행평가 공지 작성 + PDF 1개 첨부
-4) 학생 포털 공지 메뉴에서 제목·본문·첨부파일 확인
-5) 공지 수정에서 기존 첨부파일 제거 후 학생 포털 반영 확인
+Node 구문 검사:
+- app.js: 통과 
+- db.js: 통과 
+- project-data.js: 통과 

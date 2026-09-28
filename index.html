@@ -220,7 +220,7 @@
   <div class="modal-head">
     <div>
       <strong id="noticeDialogTitle">새 공지 작성</strong>
-      <div class="small muted">일반 공지와 수행평가 공지를 학생 포털에 게시합니다. 첨부파일은 Firebase Storage에 저장됩니다.</div>
+      <div class="small muted">일반 공지와 수행평가 공지를 학생 포털에 게시합니다. 첨부파일은 Google Drive 공유 링크로 연결합니다.</div>
     </div>
     <button class="icon-btn" id="closeNoticeDialog">✕</button>
   </div>
@@ -231,13 +231,15 @@
       <div class="field full"><label>제목</label><input id="noticeTitle" required maxlength="120" placeholder="예: 수행평가 연습 안내 · 수치예보 모델"/></div>
       <div class="field full"><label>공지 내용</label><textarea id="noticeBody" class="notice-body-input" required placeholder="학생에게 안내할 내용을 입력하세요."></textarea></div>
       <div class="field full">
-        <label>첨부파일</label>
-        <input id="noticeFiles" type="file" multiple accept=".pdf,.hwp,.hwpx,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.zip,.png,.jpg,.jpeg,.webp"/>
-        <div class="small muted">파일당 최대 20MB, 한 공지에 최대 5개까지 첨부할 수 있습니다. 새 파일은 공지 저장 시 업로드됩니다.</div>
-        <div id="noticeSelectedFiles" class="notice-file-list"></div>
-      </div>
-      <div class="field full">
-        <label>기존 첨부파일</label>
+        <label>Google Drive 첨부</label>
+        <div class="notice-drive-fields">
+          <input id="noticeDriveName" placeholder="학생에게 보일 파일명 · 예: 수행평가 안내문.pdf"/>
+          <div class="inline-field">
+            <input id="noticeDriveUrl" placeholder="https://drive.google.com/file/d/.../view"/>
+            <button type="button" class="btn small-btn" id="addNoticeDriveBtn">＋ 첨부 추가</button>
+          </div>
+        </div>
+        <div class="small muted">① Drive에 파일 업로드 → ② <b>링크가 있는 모든 사용자 · 뷰어</b>로 공유 → ③ 파일명과 공유 링크를 등록하세요. 한 공지에 최대 5개까지 연결할 수 있습니다.</div>
         <div id="noticeExistingAttachments" class="notice-file-list"></div>
       </div>
     </div>
