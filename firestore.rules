@@ -71,7 +71,9 @@ service cloud.firestore {
 
         // 문항 본문은 응시코드 검증을 통과해 세션이 만들어진 학생만 읽습니다.
         match /content/{contentId} {
-          allow read: if isCourseOwner(courseId) || hasValidSession(courseId, assessmentId);
+          allow read: if isCourseOwner(courseId)
+                      || (hasValidSession(courseId, assessmentId)
+                          && privateAssessment(courseId, assessmentId).status in ['WAITING', 'OPEN']);
           allow create, update, delete: if isCourseOwner(courseId);
         }
 
@@ -118,7 +120,13 @@ service cloud.firestore {
                             && sessionData(courseId, assessmentId).studentId == studentId
                             && request.resource.data.studentId == studentId
                             && request.resource.data.authUid == request.auth.uid
-                            && request.resource.data.status == 'IN_PROGRESS');
+                            && (
+                              (privateAssessment(courseId, assessmentId).status == 'WAITING'
+                               && request.resource.data.status == 'WAITING')
+                              ||
+                              (privateAssessment(courseId, assessmentId).status == 'OPEN'
+                               && request.resource.data.status == 'IN_PROGRESS')
+                            ));
 
           allow update: if isCourseOwner(courseId)
                         || (hasValidSession(courseId, assessmentId)
@@ -126,7 +134,18 @@ service cloud.firestore {
                             && resource.data.status != 'SUBMITTED'
                             && request.resource.data.studentId == resource.data.studentId
                             && request.resource.data.authUid == request.auth.uid
-                            && request.resource.data.status in ['IN_PROGRESS', 'SUBMITTED']);
+                            && (
+                              (resource.data.status == 'WAITING'
+                               && privateAssessment(courseId, assessmentId).status == 'WAITING'
+                               && request.resource.data.status == 'WAITING')
+                              ||
+                              (resource.data.status == 'WAITING'
+                               && privateAssessment(courseId, assessmentId).status == 'OPEN'
+                               && request.resource.data.status == 'IN_PROGRESS')
+                              ||
+                              (resource.data.status == 'IN_PROGRESS'
+                               && request.resource.data.status in ['IN_PROGRESS', 'SUBMITTED'])
+                            ));
 
           allow delete: if isCourseOwner(courseId);
         }

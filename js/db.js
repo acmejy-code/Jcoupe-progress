@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.0";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.0";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.1";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.1";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -776,7 +776,7 @@ function normalizeAssessment(assessment){
     durationMinutes:Math.max(0,Number(assessment.durationMinutes||0)),
     timeExtensionMinutes:Math.max(0,Number(assessment.timeExtensionMinutes||0)),
     startedAt:assessment.startedAt||null,
-    status:["DRAFT","OPEN","CLOSED"].includes(String(assessment.status))?String(assessment.status):"DRAFT",
+    status:["DRAFT","WAITING","OPEN","CLOSED"].includes(String(assessment.status))?String(assessment.status):"DRAFT",
     questions,
     projectId:activeProjectId,
     createdAt:assessment.createdAt||new Date().toISOString(),
@@ -907,6 +907,22 @@ export async function setAssessmentStatus(assessmentId,status){
   const a=normalizeAssessment({...before,status});
   await ensurePublicCourseShell();
 
+  if(status==="WAITING"){
+    const privatePayload={...a,status:"WAITING",timeExtensionMinutes:0,startedAt:null,updatedAt:new Date().toISOString()};
+    const batch=firebase.fsMod.writeBatch(db);
+    batch.set(ref,privatePayload,{merge:true});
+    batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id),{
+      ownerUid:currentUser.uid,assessmentId:a.id,title:a.title,description:a.description,status:"WAITING",
+      targetClasses:a.targetClasses,durationMinutes:a.durationMinutes,timeExtensionMinutes:0,
+      startedAt:null,questionCount:a.questions.length,updatedAt:firebase.fsMod.serverTimestamp()
+    },{merge:true});
+    batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id,"content","main"),{
+      assessmentId:a.id,title:a.title,instructions:a.instructions,questions:a.questions,updatedAt:firebase.fsMod.serverTimestamp()
+    },{merge:true});
+    await batch.commit();
+    return {...a,status:"WAITING",timeExtensionMinutes:0,startedAt:null};
+  }
+
   if(status==="OPEN"){
     const privatePayload={...a,status:"OPEN",timeExtensionMinutes:0,startedAt:firebase.fsMod.serverTimestamp(),updatedAt:new Date().toISOString()};
     const batch=firebase.fsMod.writeBatch(db);
@@ -927,6 +943,22 @@ export async function setAssessmentStatus(assessmentId,status){
   await firebase.fsMod.setDoc(ref,payload,{merge:true});
   await publishAssessmentPublic(payload);
   return payload;
+}
+
+export async function setAssessmentDuration(assessmentId,minutes){
+  requireAssessmentCloud();
+  const duration=Math.max(1,Math.min(300,Number(minutes||0)));
+  if(!Number.isFinite(duration)) throw new Error("시험시간을 확인해 주세요.");
+  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId));
+  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",String(assessmentId));
+  const snap=await firebase.fsMod.getDoc(privateRef);
+  if(!snap.exists()) throw new Error("수행평가를 찾을 수 없습니다.");
+  if(String(snap.data().status||"")==="OPEN") throw new Error("시험 시작 후에는 기본 시험시간을 변경할 수 없습니다. 추가시간 기능을 사용하세요.");
+  const batch=firebase.fsMod.writeBatch(db);
+  batch.update(privateRef,{durationMinutes:duration,updatedAt:new Date().toISOString()});
+  batch.update(publicRef,{durationMinutes:duration,updatedAt:firebase.fsMod.serverTimestamp()});
+  await batch.commit();
+  return duration;
 }
 
 export async function extendAssessmentTime(assessmentId,minutes){
