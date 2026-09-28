@@ -1,16 +1,25 @@
-JCOUP 관리자 v2.5.1 정적 검증 결과
+JCOUP 관리자 v2.5.3 검증 결과
 
-- 기준: 관리자 v2.5.0 공지 메뉴 전체 기능
-- 변경: Firebase Storage 첨부 -> Google Drive 공유 링크 첨부
-- 학생 포털 수정 없음(v1.5.1 유지)
-- firebase-storage.js import 제거 확인
-- Firebase Storage 업로드/삭제 함수 제거 확인
-- notice Drive 파일명/공유링크 입력 UI 확인
-- 공지당 최대 5개 제한 유지
-- Firestore 공지 저장/공개 구조 유지
-- 수행평가/좌석/진도/자료실 기존 기능 유지
+[핵심 수정]
+- 삭제된 noticeFiles DOM 참조 제거: 확인
+- Firebase Storage SDK 참조 제거: 확인
+- Google Drive 첨부 등록 UI 유지: 확인
+- 공지 Firestore 저장 구조 유지: 확인
+- APP_VERSION v2.5.3: 확인
+- 모듈 캐시 방지 쿼리 적용: 확인
 
-Node 구문 검사:
-- app.js: 통과 
-- db.js: 통과 
-- project-data.js: 통과 
+[정적 검사]
+- js/app.js: 통과
+- js/db.js: 통과
+- js/project-data.js: 통과
+- js/firebase-config.js: 통과
+- HTML 중복 id: 없음
+
+[배포 후 확인]
+1. 상단 버전 v2.5.3
+2. 수업 프로젝트 정상 로드
+3. 공지 메뉴 진입
+4. 새 공지 작성
+5. Drive 공유링크 첨부 추가
+6. 공지 저장
+7. 학생 포털 v1.5.1에서 공지/첨부 링크 열기

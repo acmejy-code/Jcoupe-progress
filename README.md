@@ -1,16 +1,28 @@
-# JCOUP 수업 통합 제어 시스템 관리자 v2.5.0
+# JCOUP 수업 통합 제어 시스템 관리자 v2.5.3
 
 ## 이번 버전
-- 기존 v2.4.3 좌석 배치·학생 테스트 새 창 유지
-- **공지 메뉴 추가**: 수행평가 공지 / 일반 공지
-- 공지 작성·수정·삭제·공개/비공개
-- 공지당 첨부파일 최대 5개, 파일당 최대 20MB 직접 업로드
-- 학생 포털 공지 자동 반영
+- 안정적으로 사용 중인 v2.5.0 공지 기능을 기준으로 Google Drive 첨부 링크 방식을 적용
+- Firebase Storage 사용 안 함
+- 공지 첨부: Google Drive 파일명 + 공유 링크 등록, 공지당 최대 5개
+- Google Drive 파일은 반드시 `링크가 있는 모든 사용자 - 뷰어`로 공유
+- 공지 삭제 시 Google Drive 원본 파일은 삭제되지 않음
+- 기존 좌석 배치/창가 표시/수행평가/학생 테스트 새 창 기능 유지
+
+## 중요 수정
+이전 v2.5.1에는 삭제된 `noticeFiles` 요소를 초기화 코드에서 계속 참조하는 한 줄이 남아 있어
+화면 초기화가 중단될 수 있었습니다. v2.5.3에서 해당 참조를 제거했습니다.
+
+GitHub Pages의 신·구 JS 파일 혼재를 줄이기 위해 로컬 모듈 URL에도 v2.5.3 버전값을 부여했습니다.
 
 ## 배포
-1. 관리자 저장소 `Jcoupe-progress`를 이 폴더 내용으로 전체 교체 후 Push
-2. Firebase Firestore Rules에 `firestore.rules` 적용
-3. Firebase Storage를 사용할 수 있도록 설정한 뒤 Storage Rules에 `storage.rules` 적용
-4. GitHub Pages 배포 완료 후 Ctrl+F5
+1. Jcoupe-progress 저장소의 기존 파일을 이 폴더 내용으로 전체 교체
+2. Commit
+3. Push origin
+4. GitHub Actions / Pages 배포 완료 확인
+5. 관리자 페이지에서 Ctrl+F5
+6. 화면 상단 버전이 v2.5.3인지 확인
 
-Firebase 프로젝트명 `doktogul-progress`는 변경하지 않습니다.
+## Firebase
+- Firebase Storage 활성화/설정 불필요
+- storage.rules 적용 불필요
+- 공지 데이터 저장용 Firestore 규칙은 기존 v2.5.0 공지 규칙을 유지
