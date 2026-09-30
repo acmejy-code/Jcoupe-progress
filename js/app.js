@@ -1,4 +1,4 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.3";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.4";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -9,7 +9,7 @@ import {
   replaceStudentsForClass, saveSeatLayout, upsertAssessment, setAssessmentStatus, deleteAssessment,
   watchAssessmentAttempts, resetAssessmentRun, setAssessmentDuration, extendAssessmentTime, extendAssessmentStudentTime,
   reopenAssessmentAttempt, finalizeExpiredAssessmentAttempts
-} from "./db.js?v=2.6.3";
+} from "./db.js?v=2.6.4";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));

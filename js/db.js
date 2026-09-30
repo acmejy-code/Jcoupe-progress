@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.3";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.3";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.4";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.4";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -647,6 +647,30 @@ function publicMaterial(material){
 function compareRecords(a,b){
   return String(a.date||"").localeCompare(String(b.date||"")) || Number(a.period||0)-Number(b.period||0);
 }
+function publicAcademicEvents(project){
+  return (Array.isArray(project?.academicEvents)?project.academicEvents:[])
+    .map(e=>({date:String(e?.date||""),title:String(e?.title||""),detail:String(e?.detail||"")}))
+    .filter(e=>e.date&&e.title);
+}
+function publicWeeklyTimetable(project){
+  const out={};
+  const source=project?.weeklyTimetable&&typeof project.weeklyTimetable==="object"?project.weeklyTimetable:{};
+  Object.entries(source).forEach(([day,slots])=>{
+    out[String(day)]=(Array.isArray(slots)?slots:[])
+      .map(s=>({className:String(s?.className||""),period:Number(s?.period||0)}))
+      .filter(s=>s.className&&s.period>0);
+  });
+  return out;
+}
+function publicScheduleMeta(project){
+  return {
+    semesterStart:String(project?.semesterStart||""),
+    semesterEnd:String(project?.semesterEnd||""),
+    noClassDates:(Array.isArray(project?.noClassDates)?project.noClassDates:[]).map(String).filter(Boolean),
+    academicEvents:publicAcademicEvents(project),
+    weeklyTimetable:publicWeeklyTimetable(project)
+  };
+}
 
 export async function publishStudentPortalData(projectId=activeProjectId){
   if(storageMode()!=="cloud" || !currentUser || !firebase || !db){
@@ -695,6 +719,7 @@ export async function publishStudentPortalData(projectId=activeProjectId){
     portalTitle: String(project.portalTitle||`${project.shortName||project.subjectName} 수업 종합 포털`),
     portalSubtitle: String(project.portalSubtitle||`${project.academicYear}학년도 ${project.grade}학년 · ${project.subjectName}`),
     classes: Array.isArray(project.classes)?project.classes.map(String):[],
+    ...publicScheduleMeta(project),
     publishedRecordCount: visibleRows.length,
     publishedMaterialCount: visibleMaterials.length,
     publishedNoticeCount: visibleNotices.length,
@@ -707,11 +732,15 @@ export async function publishStudentPortalData(projectId=activeProjectId){
 
   for(const className of (project.classes||[])){
     const classRows=visibleRows.filter(r=>String(r.className)===String(className));
-    if(!classRows.length) continue;
-    const current=publicRecord(classRows[classRows.length-1]);
+    const current=classRows.length?publicRecord(classRows[classRows.length-1]):null;
     const recent=classRows.slice(-10).reverse().map(publicRecord);
+    const calendarRecords=classRows.map(publicRecord);
+    const scheduleSkips=sourceRows
+      .filter(r=>String(r.className)===String(className) && (r.status==="cancelled" || r.status==="schedule_hidden"))
+      .map(r=>({date:String(r.date||""),period:Number(r.period||0)}))
+      .filter(r=>r.date&&r.period>0);
     batch.set(firebase.fsMod.doc(db,"publicCourses",projectId,"classes",String(className)),{
-      className: String(className), current, recent, updatedAt: firebase.fsMod.serverTimestamp()
+      className: String(className), current, recent, calendarRecords, scheduleSkips, updatedAt: firebase.fsMod.serverTimestamp()
     });
   }
   for(const material of visibleMaterials){
@@ -797,6 +826,7 @@ async function ensurePublicCourseShell(){
     portalTitle:String(project.portalTitle||`${project.shortName||project.subjectName} 수업 종합 포털`),
     portalSubtitle:String(project.portalSubtitle||`${project.academicYear}학년도 ${project.grade}학년 · ${project.subjectName}`),
     classes:Array.isArray(project.classes)?project.classes.map(String):[],
+    ...publicScheduleMeta(project),
     updatedAt:firebase.fsMod.serverTimestamp()
   },{merge:true});
 }
