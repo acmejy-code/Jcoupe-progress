@@ -32,6 +32,10 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/sessions/$(request.auth.uid)).data;
     }
 
+    function attemptData(courseId, assessmentId, studentId) {
+      return get(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/attempts/$(studentId)).data;
+    }
+
     // 관리자 원본 데이터: 로그인한 사용자는 자신의 데이터만 읽고 쓸 수 있습니다.
     match /users/{userId}/{document=**} {
       allow read, write: if signedIn() && request.auth.uid == userId;
@@ -73,7 +77,8 @@ service cloud.firestore {
         match /content/{contentId} {
           allow read: if isCourseOwner(courseId)
                       || (hasValidSession(courseId, assessmentId)
-                          && privateAssessment(courseId, assessmentId).status in ['WAITING', 'OPEN']);
+                          && privateAssessment(courseId, assessmentId).status == 'OPEN'
+                          && attemptData(courseId, assessmentId, sessionData(courseId, assessmentId).studentId).authUid == request.auth.uid);
           allow create, update, delete: if isCourseOwner(courseId);
         }
 
@@ -89,7 +94,7 @@ service cloud.firestore {
                         && request.resource.data.studentName is string
                         && request.resource.data.nameKey is string
                         && request.resource.data.accessCodeProof is string
-                        && privateAssessment(courseId, assessmentId).status == 'OPEN'
+                        && privateAssessment(courseId, assessmentId).status in ['WAITING', 'OPEN']
                         && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode
                         && request.resource.data.nameKey == privateStudent(courseId, request.resource.data.studentId).nameKey
                         && privateAssessment(courseId, assessmentId).targetClasses.hasAny([
@@ -111,9 +116,15 @@ service cloud.firestore {
 
         // 실제 답안. 교사는 전체를 읽고, 학생은 검증된 자기 세션의 학번 문서만 읽고 씁니다.
         match /attempts/{studentId} {
+          // 대기실에서는 동일 학생의 새 기기가 기존 WAITING 문서를 읽고 '기기 인계'할 수 있음.
+          // 시험 시작 후에는 현재 authUid를 소유한 기기만 답안/문항에 접근.
           allow read: if isCourseOwner(courseId)
                       || (hasValidSession(courseId, assessmentId)
-                          && sessionData(courseId, assessmentId).studentId == studentId);
+                          && sessionData(courseId, assessmentId).studentId == studentId
+                          && (
+                            privateAssessment(courseId, assessmentId).status == 'WAITING'
+                            || resource.data.authUid == request.auth.uid
+                          ));
 
           allow create: if isCourseOwner(courseId)
                         || (hasValidSession(courseId, assessmentId)
@@ -133,17 +144,23 @@ service cloud.firestore {
                             && sessionData(courseId, assessmentId).studentId == studentId
                             && resource.data.status != 'SUBMITTED'
                             && request.resource.data.studentId == resource.data.studentId
-                            && request.resource.data.authUid == request.auth.uid
                             && (
+                              // WAITING 상태에서는 새 기기가 자기 authUid로 문서를 인계할 수 있음.
                               (resource.data.status == 'WAITING'
                                && privateAssessment(courseId, assessmentId).status == 'WAITING'
-                               && request.resource.data.status == 'WAITING')
+                               && request.resource.data.status == 'WAITING'
+                               && request.resource.data.authUid == request.auth.uid)
                               ||
+                              // 시험 시작 순간에도 현재 대기 기기가 자기 authUid로 IN_PROGRESS 전환.
                               (resource.data.status == 'WAITING'
                                && privateAssessment(courseId, assessmentId).status == 'OPEN'
-                               && request.resource.data.status == 'IN_PROGRESS')
+                               && request.resource.data.status == 'IN_PROGRESS'
+                               && request.resource.data.authUid == request.auth.uid)
                               ||
+                              // 시험 시작 후에는 기기 소유권을 고정.
                               (resource.data.status == 'IN_PROGRESS'
+                               && resource.data.authUid == request.auth.uid
+                               && request.resource.data.authUid == request.auth.uid
                                && request.resource.data.status in ['IN_PROGRESS', 'SUBMITTED'])
                             ));
 

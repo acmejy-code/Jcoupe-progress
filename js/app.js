@@ -1,4 +1,4 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.1";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.3";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -9,7 +9,7 @@ import {
   replaceStudentsForClass, saveSeatLayout, upsertAssessment, setAssessmentStatus, deleteAssessment,
   watchAssessmentAttempts, resetAssessmentRun, setAssessmentDuration, extendAssessmentTime, extendAssessmentStudentTime,
   reopenAssessmentAttempt, finalizeExpiredAssessmentAttempts
-} from "./db.js?v=2.6.1";
+} from "./db.js?v=2.6.3";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -133,6 +133,7 @@ function nextStartPreviewForSlot(date,className,period){
 }
 
 function setView(name){
+  if(name!=="assessments"){closeAccessCodePresentation();closeFloatingExamTimer();}
   document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`));
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.view===name));
   if(name==="today")renderToday();
@@ -845,8 +846,13 @@ function statusInfo(studentId){
   const a=assessmentAttempts.find(x=>String(x.studentId||x.id)===String(studentId));
   if(!a)return {key:"NONE",label:"미접속",sub:"-"};
   if(a.status==="SUBMITTED")return {key:"SUBMITTED",label:a.autoSubmitted?"자동 제출":"제출완료",sub:fmtDateTime(a.submittedAt)};
-  if(a.status==="WAITING")return {key:"WAITING",label:"대기실 입장",sub:a.lastSeenAt?`접속 ${fmtDateTime(a.lastSeenAt)}`:"입장 확인"};
   let ms=0; try{const d=a.lastSeenAt?.toDate?a.lastSeenAt.toDate():new Date(a.lastSeenAt);ms=Date.now()-d.getTime();}catch{}
+  if(a.status==="WAITING"){
+    if(a.waitingActive===false)return {key:"WAITING_LEFT",label:"대기실 나감",sub:a.lastSeenAt?`마지막 ${fmtDateTime(a.lastSeenAt)}`:"-"};
+    if(ms>100000)return {key:"STALE",label:"대기실 연결 끊김",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
+    if(ms>45000)return {key:"WARNING",label:"대기실 연결 지연",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
+    return {key:"WAITING",label:"대기실 입장",sub:a.lastSeenAt?`접속 ${fmtDateTime(a.lastSeenAt)}`:"입장 확인"};
+  }
   if(ms>100000)return {key:"STALE",label:"접속 이상",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
   if(ms>45000)return {key:"WARNING",label:"연결 지연",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
   return {key:"IN_PROGRESS",label:"응시중",sub:a.lastSavedAt?`저장 ${fmtDateTime(a.lastSavedAt)}`:"접속 확인"};
@@ -1146,7 +1152,7 @@ function renderAssessmentMonitor(){
       ${events?`<small class="seat-integrity">${esc(events)}</small>`:""}
     </div>`;
   }).join("");
-  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">대기실 입장 학생은 문항을 볼 수 없습니다. 시험 시작 후 정상 신호는 초록, 45초 이상 지연은 노랑, 100초 이상 무응답일 때만 빨강으로 표시합니다.</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>대기 ${count("WAITING")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>지연 ${count("WARNING")}</span><span>제출 ${count("SUBMITTED")}</span><span>접속이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-room-layout">${leftMarker}<div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr));grid-template-rows:repeat(${depth},auto)">${seatHtml}</div>${rightMarker}</div><div class="seat-tools"><span class="small muted">카드의 ⋯ 버튼에서 개인 추가시간과 재응시를 허용할 수 있습니다. 화면 이탈 기록은 감독 참고용이며 자동으로 부정행위로 확정하지 않습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
+  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">대기실 입장 학생은 문항을 볼 수 없습니다. 시험 시작 후 정상 신호는 초록, 45초 이상 지연은 노랑, 100초 이상 무응답일 때만 빨강으로 표시합니다.</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>대기 ${count("WAITING")}</span><span>대기실 나감 ${count("WAITING_LEFT")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>지연 ${count("WARNING")}</span><span>제출 ${count("SUBMITTED")}</span><span>접속이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-room-layout">${leftMarker}<div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr));grid-template-rows:repeat(${depth},auto)">${seatHtml}</div>${rightMarker}</div><div class="seat-tools"><span class="small muted">카드의 ⋯ 버튼에서 개인 추가시간과 재응시를 허용할 수 있습니다. 화면 이탈 기록은 감독 참고용이며 자동으로 부정행위로 확정하지 않습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
   let dragIndex=null;
   root.querySelectorAll("[data-monitor-slot]").forEach(slot=>{slot.ondragover=e=>e.preventDefault();slot.ondrop=e=>{e.preventDefault();const to=Number(slot.dataset.monitorSlot);if(dragIndex===null||to===dragIndex)return;const tmp=slots[to]??null;slots[to]=slots[dragIndex]??null;slots[dragIndex]=tmp;dragIndex=null;const ids=verticalStudentOrder(slots);saveSeatLayout(cls,depth,ids,slots).then(()=>toast("좌석 위치를 저장했습니다.")).catch(err=>alert(err.message));};});
   root.querySelectorAll("[data-seat-student]").forEach(card=>{card.ondragstart=e=>{if(e.target.closest?.("[data-monitor-control]")){e.preventDefault();return;}dragIndex=Number(card.dataset.monitorSlot);draggedStudentId=card.dataset.seatStudent};card.ondragend=()=>{dragIndex=null;draggedStudentId=null};});
@@ -1228,14 +1234,102 @@ window.addEventListener("message",e=>{
   sendPreviewPayload();
 });
 
+
+function currentSelectedAssessment(){return assessments.find(x=>x.id===selectedAssessmentId)||null;}
+function presentationMonitorRect(){
+  const room=document.querySelector("#assessmentMonitor .seat-room-layout")||$("assessmentMonitor");
+  const rect=room?.getBoundingClientRect?.();
+  if(rect&&rect.width>240&&rect.height>120)return rect;
+  return {left:Math.max(16,(window.innerWidth-900)/2),top:Math.max(80,(window.innerHeight-520)/2),width:Math.min(900,window.innerWidth-32),height:Math.min(520,window.innerHeight-120)};
+}
+function openAccessCodePresentation(){
+  const a=currentSelectedAssessment();if(!a)return;
+  const overlay=$("accessCodePresentation"),panel=$("accessCodePresentationPanel"),value=$("accessCodePresentationValue");
+  if(!overlay||!panel||!value)return;
+  const rect=presentationMonitorRect();
+  const width=Math.min(Math.max(rect.width,520),window.innerWidth-36);
+  const height=Math.min(Math.max(rect.height,300),window.innerHeight-80);
+  panel.style.width=`${Math.round(width)}px`;panel.style.height=`${Math.round(height)}px`;
+  value.textContent=String(a.accessCode||"-");
+  overlay.classList.remove("hidden");overlay.setAttribute("aria-hidden","false");document.body.classList.add("presentation-open");
+}
+function closeAccessCodePresentation(){
+  const overlay=$("accessCodePresentation");if(!overlay)return;
+  overlay.classList.add("hidden");overlay.setAttribute("aria-hidden","true");document.body.classList.remove("presentation-open");
+}
+function sizeFloatingExamTimer(recenter=false){
+  const panel=$("floatingExamTimer");if(!panel||panel.classList.contains("hidden"))return;
+  const rect=presentationMonitorRect();
+  const sample=document.querySelector("#assessmentMonitor .seat-card")||document.querySelector("#assessmentMonitor .seat-empty-monitor");
+  const sampleHeight=sample?.getBoundingClientRect?.().height||96;
+  const width=Math.min(Math.max(rect.width,520),window.innerWidth-28);
+  const height=Math.min(Math.max(sampleHeight*2+64,220),Math.min(340,window.innerHeight-28));
+  panel.style.width=`${Math.round(width)}px`;panel.style.height=`${Math.round(height)}px`;
+  if(recenter||!panel.dataset.positioned){
+    const left=Math.min(Math.max(14,rect.left),Math.max(14,window.innerWidth-width-14));
+    const preferredTop=rect.top+Math.min(28,Math.max(8,rect.height*.08));
+    const top=Math.min(Math.max(14,preferredTop),Math.max(14,window.innerHeight-height-14));
+    panel.style.left=`${Math.round(left)}px`;panel.style.top=`${Math.round(top)}px`;panel.dataset.positioned="1";
+  }else{
+    const box=panel.getBoundingClientRect();
+    panel.style.left=`${Math.min(Math.max(8,box.left),Math.max(8,window.innerWidth-width-8))}px`;
+    panel.style.top=`${Math.min(Math.max(8,box.top),Math.max(8,window.innerHeight-height-8))}px`;
+  }
+}
+function openFloatingExamTimer(){
+  const a=currentSelectedAssessment();if(!a||a.status!=="OPEN")return;
+  const panel=$("floatingExamTimer");if(!panel)return;
+  panel.classList.remove("hidden");panel.dataset.positioned="";sizeFloatingExamTimer(true);updateAdminAssessmentClock();
+}
+function closeFloatingExamTimer(){
+  const panel=$("floatingExamTimer");if(!panel)return;
+  panel.classList.add("hidden");panel.classList.remove("timer-warning","timer-expired");panel.dataset.positioned="";
+}
+function bindFloatingExamTimerDrag(){
+  const panel=$("floatingExamTimer"),handle=$("floatingExamTimerHandle");if(!panel||!handle||handle.dataset.dragBound)return;
+  handle.dataset.dragBound="1";
+  let dragging=false,startX=0,startY=0,startLeft=0,startTop=0;
+  handle.addEventListener("pointerdown",e=>{
+    if(e.target.closest?.("button"))return;
+    const r=panel.getBoundingClientRect();dragging=true;startX=e.clientX;startY=e.clientY;startLeft=r.left;startTop=r.top;
+    try{handle.setPointerCapture(e.pointerId);}catch{}
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove",e=>{
+    if(!dragging)return;
+    const left=Math.min(Math.max(8,startLeft+e.clientX-startX),Math.max(8,window.innerWidth-panel.offsetWidth-8));
+    const top=Math.min(Math.max(8,startTop+e.clientY-startY),Math.max(8,window.innerHeight-panel.offsetHeight-8));
+    panel.style.left=`${Math.round(left)}px`;panel.style.top=`${Math.round(top)}px`;panel.dataset.positioned="1";
+  });
+  const stop=e=>{if(!dragging)return;dragging=false;try{handle.releasePointerCapture(e.pointerId);}catch{}};
+  handle.addEventListener("pointerup",stop);handle.addEventListener("pointercancel",stop);
+}
+function presentationKeyboardActivate(el,fn){
+  if(!el)return;el.onclick=fn;el.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();fn();}};
+}
+
 function updateAdminAssessmentClock(){
-  const el=$("assessmentAdminTimer");if(!el)return;
-  const a=assessments.find(x=>x.id===selectedAssessmentId);
-  if(!a||a.status!=="OPEN"||!assessmentDeadlineMs(a)){el.textContent="시간 미시작";return;}
+  const el=$("assessmentAdminTimer");
+  const floating=$("floatingExamTimer"),floatingValue=$("floatingExamTimerValue"),floatingMeta=$("floatingExamTimerMeta");
+  const a=currentSelectedAssessment();
+  if(!a||a.status!=="OPEN"||!assessmentDeadlineMs(a)){
+    if(el)el.textContent="시간 미시작";
+    if(floating&&!floating.classList.contains("hidden"))closeFloatingExamTimer();
+    return;
+  }
   const ms=assessmentDeadlineMs(a)-Date.now();
-  el.textContent=ms>0?`남은 시간 ${formatRemaining(ms)}`:"기본 시험시간 종료";
-  el.classList.toggle("timer-warning",ms>0&&ms<=300000);
-  el.classList.toggle("timer-expired",ms<=0);
+  const remain=ms>0?formatRemaining(ms):"00:00";
+  if(el){
+    el.textContent=ms>0?`남은 시간 ${remain}`:"기본 시험시간 종료";
+    el.classList.toggle("timer-warning",ms>0&&ms<=300000);
+    el.classList.toggle("timer-expired",ms<=0);
+  }
+  if(floatingValue)floatingValue.textContent=ms>0?remain:"00:00";
+  if(floatingMeta)floatingMeta.textContent=`시험 ${Number(a.durationMinutes||0)}분${Number(a.timeExtensionMinutes||0)?` · 전체 연장 +${Number(a.timeExtensionMinutes)}분`:""}`;
+  if(floating){
+    floating.classList.toggle("timer-warning",ms>0&&ms<=300000);
+    floating.classList.toggle("timer-expired",ms<=0);
+  }
 }
 async function runExpiredFinalize(){
   if(assessmentDeadlineBusy||storageMode()!=="cloud")return;
@@ -1254,16 +1348,18 @@ function renderAssessments(){
   if(storageMode()!=="cloud"){root.innerHTML=`<div class="card assessment-empty"><h2>수행평가 응시 관리</h2><p>학생 인증·실시간 감독·답안 수집은 Firestore를 사용하므로 Google 로그인 후 사용할 수 있습니다.</p></div>`;return;}
   if(!selectedAssessmentId||!assessments.some(a=>a.id===selectedAssessmentId))selectedAssessmentId=assessments[0]?.id||null;
   const selected=assessments.find(a=>a.id===selectedAssessmentId)||null;if(!selectedMonitorClass)selectedMonitorClass=selected?.targetClasses?.[0]||projectClasses()[0]||"";
-  const timer=selected?.status==="OPEN"?`<div class="assessment-admin-time"><b id="assessmentAdminTimer">남은 시간 계산 중</b><span>시험 ${Number(selected.durationMinutes||0)}분${Number(selected.timeExtensionMinutes||0)?` + 전체 연장 ${Number(selected.timeExtensionMinutes)}분`:""}</span></div>`:"";
+  const timer=selected?.status==="OPEN"?`<div class="assessment-admin-time" id="expandAssessmentTimerBtn" role="button" tabindex="0" title="클릭하면 큰 시험시간 창을 띄웁니다"><b id="assessmentAdminTimer">남은 시간 계산 중</b><span>시험 ${Number(selected.durationMinutes||0)}분${Number(selected.timeExtensionMinutes||0)?` + 전체 연장 ${Number(selected.timeExtensionMinutes)}분`:""}</span></div>`:"";
   const preStartControls=selected?.status==="DRAFT"
     ?`<button class="btn success-btn" id="openWaitingRoomBtn">학생 입장 열기</button>`
     :selected?.status==="WAITING"
       ?`<label class="assessment-duration-inline">시험시간 <input id="waitingDurationInput" type="number" min="1" max="300" value="${Number(selected.durationMinutes||50)}">분</label><button class="btn success-btn" id="startExamBtn">시험 시작</button>`
       :"";
-  root.innerHTML=`<div class="assessment-toolbar"><div><h2>수행평가 응시 관리</h2><div class="small muted">먼저 학생 입장을 열어 모두 대기실에 들어오게 한 뒤, 시험시간을 확인하고 ‘시험 시작’을 누르면 문항이 동시에 공개되고 공통 시간이 흐릅니다.</div></div><div class="assessment-actions"><button class="btn" id="manageRosterBtn">학생 명단·좌석</button><button class="btn" id="studentTestBtn">학생 화면 테스트</button><button class="btn primary" id="newAssessmentBtn">＋ 수행평가 만들기</button></div></div><div class="assessment-layout"><div class="assessment-list-panel card"><h3>평가 목록</h3><div class="assessment-list">${assessments.length?assessments.map(a=>`<button class="assessment-row ${a.id===selectedAssessmentId?"active":""}" data-assessment-id="${esc(a.id)}"><span><b>${esc(a.title)}</b><small>${esc((a.targetClasses||[]).join("·"))}반 · ${a.questions?.length||0}문항 · ${Number(a.durationMinutes||0)}분</small></span><em class="assessment-status ${String(a.status).toLowerCase()}">${assessmentStatusLabel(a.status)}</em></button>`).join(""):`<div class="empty">아직 만든 수행평가가 없습니다.</div>`}</div></div><div class="assessment-main">${selected?`<div class="card assessment-control"><div class="assessment-control-head"><div><div class="label">${assessmentStatusLabel(selected.status)}</div><h3>${esc(selected.title)}</h3><p>${esc(selected.description||"학생 안내 없음")}</p></div><div class="assessment-control-side"><div class="code-box"><span>응시코드</span><strong>${esc(selected.accessCode)}</strong></div>${timer}</div></div><div class="assessment-control-actions"><button class="btn" id="editAssessmentBtn">수정</button>${preStartControls}${selected.status==="OPEN"?`<button class="btn danger" id="closeAssessmentBtn2">평가 종료</button><button class="btn" id="extendAssessment5Btn">전체 +5분</button><button class="btn" id="extendAssessment10Btn">전체 +10분</button>`:""}<button class="btn" id="exportAssessmentBtn">응답 CSV</button><button class="btn" id="resetAssessmentBtn">테스트 기록 초기화</button><label class="monitor-class-label">감독 반 <select id="monitorClassSelect">${(selected.targetClasses||[]).map(c=>`<option value="${esc(c)}" ${c===selectedMonitorClass?"selected":""}>${esc(c)}반</option>`).join("")}</select></label></div></div><div id="assessmentMonitor" class="card assessment-monitor"></div>`:`<div class="card assessment-empty"><b>수행평가를 만들어 주세요.</b></div>`}</div></div>`;
+  root.innerHTML=`<div class="assessment-toolbar"><div><h2>수행평가 응시 관리</h2><div class="small muted">먼저 학생 입장을 열어 모두 대기실에 들어오게 한 뒤, 시험시간을 확인하고 ‘시험 시작’을 누르면 문항이 동시에 공개되고 공통 시간이 흐릅니다.</div></div><div class="assessment-actions"><button class="btn" id="manageRosterBtn">학생 명단·좌석</button><button class="btn" id="studentTestBtn">학생 화면 테스트</button><button class="btn primary" id="newAssessmentBtn">＋ 수행평가 만들기</button></div></div><div class="assessment-layout"><div class="assessment-list-panel card"><h3>평가 목록</h3><div class="assessment-list">${assessments.length?assessments.map(a=>`<button class="assessment-row ${a.id===selectedAssessmentId?"active":""}" data-assessment-id="${esc(a.id)}"><span><b>${esc(a.title)}</b><small>${esc((a.targetClasses||[]).join("·"))}반 · ${a.questions?.length||0}문항 · ${Number(a.durationMinutes||0)}분</small></span><em class="assessment-status ${String(a.status).toLowerCase()}">${assessmentStatusLabel(a.status)}</em></button>`).join(""):`<div class="empty">아직 만든 수행평가가 없습니다.</div>`}</div></div><div class="assessment-main">${selected?`<div class="card assessment-control"><div class="assessment-control-head"><div><div class="label">${assessmentStatusLabel(selected.status)}</div><h3>${esc(selected.title)}</h3><p>${esc(selected.description||"학생 안내 없음")}</p></div><div class="assessment-control-side"><div class="code-box" id="expandAccessCodeBtn" role="button" tabindex="0" title="클릭하면 응시코드를 크게 표시합니다"><span>응시코드</span><strong>${esc(selected.accessCode)}</strong></div>${timer}</div></div><div class="assessment-control-actions"><button class="btn" id="editAssessmentBtn">수정</button>${preStartControls}${selected.status==="OPEN"?`<button class="btn danger" id="closeAssessmentBtn2">평가 종료</button><button class="btn" id="extendAssessment5Btn">전체 +5분</button><button class="btn" id="extendAssessment10Btn">전체 +10분</button>`:""}<button class="btn" id="exportAssessmentBtn">응답 CSV</button><button class="btn" id="resetAssessmentBtn">테스트 기록 초기화</button><label class="monitor-class-label">감독 반 <select id="monitorClassSelect">${(selected.targetClasses||[]).map(c=>`<option value="${esc(c)}" ${c===selectedMonitorClass?"selected":""}>${esc(c)}반</option>`).join("")}</select></label></div></div><div id="assessmentMonitor" class="card assessment-monitor"></div>`:`<div class="card assessment-empty"><b>수행평가를 만들어 주세요.</b></div>`}</div></div>`;
   $("manageRosterBtn").onclick=openRosterDialog;$("studentTestBtn").onclick=openStudentTestDialog;$("newAssessmentBtn").onclick=()=>openAssessmentDialog();
-  document.querySelectorAll("[data-assessment-id]").forEach(b=>b.onclick=()=>{selectedAssessmentId=b.dataset.assessmentId;assessmentAttempts=[];const aa=assessments.find(x=>x.id===selectedAssessmentId);selectedMonitorClass=aa?.targetClasses?.[0]||"";renderAssessments();startAttemptWatch();});
+  document.querySelectorAll("[data-assessment-id]").forEach(b=>b.onclick=()=>{closeAccessCodePresentation();closeFloatingExamTimer();selectedAssessmentId=b.dataset.assessmentId;assessmentAttempts=[];const aa=assessments.find(x=>x.id===selectedAssessmentId);selectedMonitorClass=aa?.targetClasses?.[0]||"";renderAssessments();startAttemptWatch();});
   if(selected){
+    presentationKeyboardActivate($("expandAccessCodeBtn"),openAccessCodePresentation);
+    presentationKeyboardActivate($("expandAssessmentTimerBtn"),openFloatingExamTimer);
     $("editAssessmentBtn").onclick=()=>openAssessmentDialog(selected);
     const waitingBtn=$("openWaitingRoomBtn");if(waitingBtn)waitingBtn.onclick=async()=>{if(confirm("학생 입장을 열까요?\n\n학생들은 학번·이름·응시코드로 인증한 뒤 대기실에서 기다리며, 아직 문항은 볼 수 없습니다.")){await setAssessmentStatus(selected.id,"WAITING");toast("학생 대기실을 열었습니다.");}};
     const startBtn=$("startExamBtn");if(startBtn)startBtn.onclick=async()=>{const minutes=Math.max(1,Number($("waitingDurationInput")?.value||selected.durationMinutes||50));if(confirm(`시험을 지금 시작할까요?\n\n문항이 학생들에게 동시에 공개되고 ${minutes}분의 공통 시험시간이 지금부터 시작됩니다.`)){await setAssessmentDuration(selected.id,minutes);await setAssessmentStatus(selected.id,"OPEN");toast(`${minutes}분 시험을 시작했습니다.`);}};
@@ -1322,6 +1418,12 @@ function renderProjects(){
 
 function bind(){
   document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>setView(t.dataset.view));
+  if($("closeAccessCodePresentation"))$("closeAccessCodePresentation").onclick=closeAccessCodePresentation;
+  if($("accessCodePresentation"))$("accessCodePresentation").onclick=e=>{if(e.target===$("accessCodePresentation"))closeAccessCodePresentation();};
+  if($("closeFloatingExamTimer"))$("closeFloatingExamTimer").onclick=closeFloatingExamTimer;
+  bindFloatingExamTimerDrag();
+  window.addEventListener("keydown",e=>{if(e.key==="Escape"){closeAccessCodePresentation();closeFloatingExamTimer();}});
+  window.addEventListener("resize",()=>{if(!$("floatingExamTimer")?.classList.contains("hidden"))sizeFloatingExamTimer(false);});
   $("projectSelect").onchange=e=>switchProject(e.target.value);
   $("prevMonth").onclick=()=>{currentMonth=new Date(currentMonth.getFullYear(),currentMonth.getMonth()-1,1);renderCalendar();};
   $("nextMonth").onclick=()=>{currentMonth=new Date(currentMonth.getFullYear(),currentMonth.getMonth()+1,1);renderCalendar();};

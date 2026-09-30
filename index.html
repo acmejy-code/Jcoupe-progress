@@ -423,8 +423,35 @@
   </div>
 </dialog>
 
+
+
+<!-- v2.6.3: 응시코드 대형 표시 -->
+<div id="accessCodePresentation" class="assessment-presentation-overlay hidden" aria-hidden="true">
+  <div id="accessCodePresentationPanel" class="assessment-code-presentation" role="dialog" aria-modal="true" aria-labelledby="accessCodePresentationLabel">
+    <button type="button" class="presentation-close" id="closeAccessCodePresentation" aria-label="응시코드 확대창 닫기">✕</button>
+    <span id="accessCodePresentationLabel">응시코드</span>
+    <strong id="accessCodePresentationValue">-</strong>
+    <small>학생들이 확인한 뒤 화면의 빈 곳을 클릭하거나 ESC를 누르면 닫힙니다.</small>
+  </div>
+</div>
+
+<!-- v2.6.3: 이동 가능한 대형 시험시간 -->
+<div id="floatingExamTimer" class="floating-exam-timer hidden" role="dialog" aria-label="이동 가능한 수행평가 시험시간 창">
+  <div id="floatingExamTimerHandle" class="floating-exam-timer-handle">
+    <div>
+      <b>수행평가 시험시간</b>
+      <span>상단을 끌어서 이동</span>
+    </div>
+    <button type="button" id="closeFloatingExamTimer" class="floating-timer-close" aria-label="시험시간 확대창 닫기">✕</button>
+  </div>
+  <div class="floating-exam-timer-body">
+    <strong id="floatingExamTimerValue">00:00</strong>
+    <span id="floatingExamTimerMeta">시험시간을 불러오는 중...</span>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script type="module" src="./js/app.js?v=2.6.1"></script>
+  <script type="module" src="./js/app.js?v=2.6.3"></script>
 </body>
 </html>
