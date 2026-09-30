@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.4";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.4";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.5";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.5";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -1019,6 +1019,9 @@ export async function reopenAssessmentAttempt(assessmentId,studentId){
     reopenedAt:firebase.fsMod.serverTimestamp(),
     reopenCount:firebase.fsMod.increment(1),
     autoSubmitted:false,
+    submissionReason:null,
+    forcedFinalized:false,
+    forcedFinalizedAt:null,
     lastTeacherActionAt:firebase.fsMod.serverTimestamp()
   });
 }
@@ -1032,31 +1035,82 @@ function tsMillis(v){
   }catch{return 0;}
 }
 
-export async function finalizeExpiredAssessmentAttempts(assessmentId){
+export async function getAssessmentServerTimeMs(){
+  requireAssessmentCloud();
+  const ref=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"runtime","assessmentClock");
+  await firebase.fsMod.setDoc(ref,{
+    sampledAt:firebase.fsMod.serverTimestamp(),
+    clientSampleAt:Date.now()
+  },{merge:true});
+  const snap=await firebase.fsMod.getDoc(ref);
+  return tsMillis(snap.data()?.sampledAt)||Date.now();
+}
+
+async function finalizeAttemptRefs(refs,reason){
+  let finalized=0,failed=0;
+  for(let i=0;i<refs.length;i+=20){
+    const results=await Promise.all(refs.slice(i,i+20).map(async ref=>{
+      try{
+        let changed=false;
+        await firebase.fsMod.runTransaction(db,async tx=>{
+          const snap=await tx.get(ref);
+          if(!snap.exists()||snap.data().status==="SUBMITTED")return;
+          tx.update(ref,{
+            status:"SUBMITTED",
+            submittedAt:firebase.fsMod.serverTimestamp(),
+            autoSubmitted:true,
+            submissionReason:String(reason||"TIME_EXPIRED"),
+            forcedFinalized:true,
+            forcedFinalizedAt:firebase.fsMod.serverTimestamp(),
+            waitingActive:false,
+            lastSeenAt:firebase.fsMod.serverTimestamp()
+          });
+          changed=true;
+        });
+        return changed?1:0;
+      }catch(err){
+        console.warn("강제 제출 처리 실패",ref.path,err);
+        return -1;
+      }
+    }));
+    finalized+=results.filter(v=>v===1).length;
+    failed+=results.filter(v=>v===-1).length;
+  }
+  return {finalized,failed};
+}
+
+export async function finalizeExpiredAssessmentAttempts(assessmentId,nowMs=Date.now()){
   requireAssessmentCloud();
   const aRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId));
   const aSnap=await firebase.fsMod.getDoc(aRef);
-  if(!aSnap.exists())return 0;
+  if(!aSnap.exists())return {finalized:0,failed:0,remainingUnexpired:0,totalPending:0,commonDeadlineMs:0,nextDeadlineMs:0};
   const a=aSnap.data();
   const started=tsMillis(a.startedAt);
-  if(!started||!Number(a.durationMinutes||0))return 0;
+  if(!started||!Number(a.durationMinutes||0))return {finalized:0,failed:0,remainingUnexpired:0,totalPending:0,commonDeadlineMs:0,nextDeadlineMs:0};
   const globalMinutes=Number(a.durationMinutes||0)+Number(a.timeExtensionMinutes||0);
-  const now=Date.now();
+  const now=Number.isFinite(Number(nowMs))?Number(nowMs):Date.now();
   const attempts=await firebase.fsMod.getDocs(firebase.fsMod.collection(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts"));
-  const expired=attempts.docs.filter(d=>{
-    const x=d.data();
-    if(x.status==="SUBMITTED")return false;
-    const deadline=started+(globalMinutes+Number(x.extraMinutes||0))*60000;
-    return now>=deadline;
-  });
-  for(let i=0;i<expired.length;i+=400){
-    const batch=firebase.fsMod.writeBatch(db);
-    expired.slice(i,i+400).forEach(d=>batch.update(d.ref,{
-      status:"SUBMITTED",submittedAt:firebase.fsMod.serverTimestamp(),autoSubmitted:true,lastSeenAt:firebase.fsMod.serverTimestamp()
-    }));
-    await batch.commit();
-  }
-  return expired.length;
+  const pending=attempts.docs.filter(d=>d.data().status!=="SUBMITTED");
+  const rows=pending.map(d=>({doc:d,deadline:started+(globalMinutes+Number(d.data().extraMinutes||0))*60000}));
+  const expired=rows.filter(x=>now>=x.deadline).map(x=>x.doc.ref);
+  const remainingUnexpired=rows.filter(x=>now<x.deadline).length;
+  const nextDeadlineMs=rows.filter(x=>now<x.deadline).reduce((m,x)=>Math.max(m,x.deadline),0);
+  const result=await finalizeAttemptRefs(expired,"TIME_EXPIRED");
+  return {
+    ...result,
+    remainingUnexpired,
+    totalPending:pending.length,
+    commonDeadlineMs:started+globalMinutes*60000,
+    nextDeadlineMs
+  };
+}
+
+export async function finalizeAllAssessmentAttempts(assessmentId,reason="TEACHER_CLOSE"){
+  requireAssessmentCloud();
+  const attempts=await firebase.fsMod.getDocs(firebase.fsMod.collection(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts"));
+  const pending=attempts.docs.filter(d=>d.data().status!=="SUBMITTED").map(d=>d.ref);
+  const result=await finalizeAttemptRefs(pending,reason);
+  return {...result,totalPending:pending.length};
 }
 
 export async function deleteAssessment(assessmentId){

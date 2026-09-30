@@ -1,14 +1,16 @@
-JCOUP 관리자 v2.6.4 정적 검증 결과
+JCOUP 관리자 v2.6.5 정적 검증 결과
 
-- 기준 소스: 관리자 v2.6.3
-- APP_VERSION 및 모듈 캐시 쿼리 v2.6.4 갱신: 확인
-- 기존 응시코드 확대 / 이동형 시험시간 / 대기실 재입장 지원 코드 유지: 확인
-- 학생 포털 공개 메타데이터에 semesterStart/semesterEnd 추가: 확인
-- academicEvents/noClassDates/weeklyTimetable 공개 발행 추가: 확인
-- 반별 calendarRecords 전체 공개 진도 발행 추가: 확인
-- schedule_hidden/cancelled 일정의 scheduleSkips 발행 추가: 확인
-- 진도 기록이 없는 반도 공개 classes 문서 생성: 확인
-- firestore.rules 구조 변경 없음: 확인
-- JavaScript 정적 구문 검사: 통과
+- js/app.js Node 구문 검사: 통과
+- js/db.js Node 구문 검사: 통과
+- js/project-data.js / firebase-config.js 구문 검사: 통과
+- APP_VERSION 및 모듈 캐시 쿼리 v2.6.5 갱신: 확인
+- Firestore 서버 시각 샘플링 함수 연결: 확인
+- 시험시간 종료 강제 제출 함수: 확인
+- 개인 추가시간을 반영한 학생별 deadline 계산: 확인
+- Firestore transaction 기반 제출 확정: 확인
+- 교사 '평가 종료' 시 미제출 답안 선확정 후 CLOSED 전환: 확인
+- 자동 마감 시 남은 추가시간 학생이 없을 때 CLOSED 자동 전환: 확인
+- CSV 제출사유 열: 확인
+- firestore.rules: v2.6.4와 SHA-256 동일 (규칙 재게시 불필요)
 
-배포 후 관리자에서 '학생 포털 발행'을 1회 실행해야 기존 공개 데이터가 새 달력 형식으로 갱신됩니다.
+주의: 브라우저/Firebase 실제 통합 동작은 배포 후 관리자 테스트 모드 또는 짧은 테스트 평가로 최종 확인 권장.
