@@ -400,8 +400,13 @@
   </div>
   <div class="modal-body">
     <div class="monitor-control-actions">
-      <button type="button" class="btn" id="monitorAdd5Btn">개인 +5분</button>
-      <button type="button" class="btn" id="monitorAdd10Btn">개인 +10분</button>
+      <button type="button" class="btn" id="monitorAdd1Btn">개인 +1분</button>
+      <button type="button" class="btn" id="monitorAdd5Btn">+5분</button>
+      <button type="button" class="btn" id="monitorAdd10Btn">+10분</button>
+      <label class="inline-field" style="display:flex;align-items:center;gap:6px;">직접 추가
+        <input id="monitorAddMinutesInput" type="number" min="1" max="120" step="1" value="1" style="width:78px;"/>
+        <button type="button" class="btn" id="monitorAddCustomBtn">분 추가</button>
+      </label>
       <button type="button" class="btn primary" id="monitorReopenBtn">재응시 허용</button>
     </div>
     <div class="small muted">화면 이탈·복사·붙여넣기 기록은 감독 참고 자료입니다. 해당 기록만으로 부정행위를 자동 확정하지 않습니다.</div>
@@ -452,6 +457,6 @@
 
 <div class="toast" id="toast"></div>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script type="module" src="./js/app.js?v=2.6.5"></script>
+  <script type="module" src="./js/app.js?v=2.6.8"></script>
 </body>
 </html>

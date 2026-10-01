@@ -133,3 +133,8 @@ dialog{border:0;border-radius:16px;padding:0;width:min(760px,calc(100% - 20px));
 .floating-exam-timer.timer-expired{border-color:#e11d48}.floating-exam-timer.timer-expired .floating-exam-timer-handle{background:#9f1239}.floating-exam-timer.timer-expired .floating-exam-timer-body strong{color:#be123c}
 body.presentation-open{overflow:hidden}
 @media(max-width:700px){.assessment-code-presentation{padding:28px 18px}.floating-exam-timer{min-width:280px}.floating-exam-timer-handle span{display:none}.floating-exam-timer-body strong{font-size:clamp(54px,18vw,94px)}}
+
+/* v2.6.6 - 종료 직후 제출 확정 대기 상태 */
+.status-expired_pending{border-color:#f59e0b;background:#fffbeb}
+
+/* v2.6.8 - 평가 삭제/개인 1분 단위 시간추가 UI는 기존 공통 버튼·inline-field 스타일 사용 */

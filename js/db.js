@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.5";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.5";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.8";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.8";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -1046,38 +1046,50 @@ export async function getAssessmentServerTimeMs(){
   return tsMillis(snap.data()?.sampledAt)||Date.now();
 }
 
-async function finalizeAttemptRefs(refs,reason){
+async function finalizeAttemptRefs(items,reason){
   let finalized=0,failed=0;
-  for(let i=0;i<refs.length;i+=20){
-    const results=await Promise.all(refs.slice(i,i+20).map(async ref=>{
+  const errorCodes=new Set();
+  const maxAttempts=4;
+  const rows=(items||[]).map(item=>item?.ref?item:{ref:item,doc:null,deadline:0});
+  // v2.6.8: 관리자 강제 확정은 답안 본문을 절대 덮지 않고,
+  // 확정 당시 서버에 존재하던 마지막 저장/기기수정 시각과 개인 마감시각을 감사정보로 남긴다.
+  for(let i=0;i<rows.length;i+=20){
+    const chunk=rows.slice(i,i+20);
+    let committed=false,lastErr=null;
+    for(let attempt=1;attempt<=maxAttempts&&!committed;attempt++){
       try{
-        let changed=false;
-        await firebase.fsMod.runTransaction(db,async tx=>{
-          const snap=await tx.get(ref);
-          if(!snap.exists()||snap.data().status==="SUBMITTED")return;
-          tx.update(ref,{
+        const batch=firebase.fsMod.writeBatch(db);
+        chunk.forEach(item=>{
+          const data=item.doc?.data?.()||{};
+          const payload={
             status:"SUBMITTED",
             submittedAt:firebase.fsMod.serverTimestamp(),
             autoSubmitted:true,
             submissionReason:String(reason||"TIME_EXPIRED"),
             forcedFinalized:true,
             forcedFinalizedAt:firebase.fsMod.serverTimestamp(),
+            forcedFinalizedSourceSavedAt:data.lastSavedAt||null,
+            forcedFinalizedSourceClientEditAt:data.lastClientEditAt||null,
             waitingActive:false,
             lastSeenAt:firebase.fsMod.serverTimestamp()
-          });
-          changed=true;
+          };
+          if(item.deadline)payload.effectiveDeadlineAt=new Date(Number(item.deadline));
+          batch.update(item.ref,payload);
         });
-        return changed?1:0;
+        await batch.commit();
+        finalized+=chunk.length;committed=true;
       }catch(err){
-        console.warn("강제 제출 처리 실패",ref.path,err);
-        return -1;
+        lastErr=err;errorCodes.add(String(err?.code||err?.name||"unknown"));
+        console.warn(`강제 제출 batch 실패 ${attempt}/${maxAttempts}`,chunk.map(x=>x.ref.path),err);
+        if(attempt<maxAttempts)await new Promise(resolve=>setTimeout(resolve,350*attempt*attempt));
       }
-    }));
-    finalized+=results.filter(v=>v===1).length;
-    failed+=results.filter(v=>v===-1).length;
+    }
+    if(!committed){failed+=chunk.length;if(lastErr)console.warn("강제 제출 최종 실패",lastErr);}
   }
-  return {finalized,failed};
+  return {finalized,failed,errorCodes:[...errorCodes]};
 }
+
+const ASSESSMENT_FINALIZE_GRACE_MS=30000;
 
 export async function finalizeExpiredAssessmentAttempts(assessmentId,nowMs=Date.now()){
   requireAssessmentCloud();
@@ -1092,15 +1104,16 @@ export async function finalizeExpiredAssessmentAttempts(assessmentId,nowMs=Date.
   const attempts=await firebase.fsMod.getDocs(firebase.fsMod.collection(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts"));
   const pending=attempts.docs.filter(d=>d.data().status!=="SUBMITTED");
   const rows=pending.map(d=>({doc:d,deadline:started+(globalMinutes+Number(d.data().extraMinutes||0))*60000}));
-  const expired=rows.filter(x=>now>=x.deadline).map(x=>x.doc.ref);
-  const remainingUnexpired=rows.filter(x=>now<x.deadline).length;
-  const nextDeadlineMs=rows.filter(x=>now<x.deadline).reduce((m,x)=>Math.max(m,x.deadline),0);
+  const expired=rows.filter(x=>now>=x.deadline+ASSESSMENT_FINALIZE_GRACE_MS).map(x=>({ref:x.doc.ref,doc:x.doc,deadline:x.deadline}));
+  const remainingUnexpired=rows.filter(x=>now<x.deadline+ASSESSMENT_FINALIZE_GRACE_MS).length;
+  const nextDeadlineMs=rows.filter(x=>now<x.deadline+ASSESSMENT_FINALIZE_GRACE_MS).reduce((m,x)=>Math.max(m,x.deadline+ASSESSMENT_FINALIZE_GRACE_MS),0);
   const result=await finalizeAttemptRefs(expired,"TIME_EXPIRED");
   return {
     ...result,
     remainingUnexpired,
     totalPending:pending.length,
     commonDeadlineMs:started+globalMinutes*60000,
+    commonFinalizeAtMs:started+globalMinutes*60000+ASSESSMENT_FINALIZE_GRACE_MS,
     nextDeadlineMs
   };
 }
@@ -1108,20 +1121,38 @@ export async function finalizeExpiredAssessmentAttempts(assessmentId,nowMs=Date.
 export async function finalizeAllAssessmentAttempts(assessmentId,reason="TEACHER_CLOSE"){
   requireAssessmentCloud();
   const attempts=await firebase.fsMod.getDocs(firebase.fsMod.collection(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts"));
-  const pending=attempts.docs.filter(d=>d.data().status!=="SUBMITTED").map(d=>d.ref);
-  const result=await finalizeAttemptRefs(pending,reason);
+  const pending=attempts.docs.filter(d=>d.data().status!=="SUBMITTED");
+  const result=await finalizeAttemptRefs(pending.map(d=>({ref:d.ref,doc:d,deadline:0})),reason);
   return {...result,totalPending:pending.length};
+}
+
+export async function getAssessmentRecoverySnapshots(assessmentId){
+  requireAssessmentCloud();
+  const snap=await firebase.fsMod.getDocs(firebase.fsMod.collection(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"sessions"));
+  return snap.docs.map(d=>({id:d.id,...d.data()}));
 }
 
 export async function deleteAssessment(assessmentId){
   requireAssessmentCloud();
-  const attempts=await firebase.fsMod.getDocs(firebase.fsMod.collection(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"attempts"));
-  if(!attempts.empty) throw new Error("응시 기록이 있는 평가는 삭제할 수 없습니다. 테스트 기록을 먼저 초기화해 주세요.");
+  const id=String(assessmentId);
+  const base=["publicCourses",activeProjectId,"assessments",id];
+  const [attempts,sessions]=await Promise.all([
+    firebase.fsMod.getDocs(firebase.fsMod.collection(db,...base,"attempts")),
+    firebase.fsMod.getDocs(firebase.fsMod.collection(db,...base,"sessions"))
+  ]);
+  // v2.6.8: 테스트/종료 평가도 한 번에 삭제할 수 있도록 응시 기록과 인증 세션을 함께 정리합니다.
+  const children=[...attempts.docs,...sessions.docs];
+  for(let i=0;i<children.length;i+=400){
+    const childBatch=firebase.fsMod.writeBatch(db);
+    children.slice(i,i+400).forEach(d=>childBatch.delete(d.ref));
+    await childBatch.commit();
+  }
   const batch=firebase.fsMod.writeBatch(db);
-  batch.delete(firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId)));
-  batch.delete(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",String(assessmentId),"content","main"));
-  batch.delete(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",String(assessmentId)));
+  batch.delete(firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id));
+  batch.delete(firebase.fsMod.doc(db,...base,"content","main"));
+  batch.delete(firebase.fsMod.doc(db,...base));
   await batch.commit();
+  return {attempts:attempts.size,sessions:sessions.size};
 }
 
 export function watchAssessmentAttempts(assessmentId,callback){

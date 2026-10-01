@@ -1,16 +1,9 @@
-JCOUP 관리자 v2.6.5 정적 검증 결과
+JCOUP 관리자 v2.6.8 정적 검증 결과
 
-- js/app.js Node 구문 검사: 통과
-- js/db.js Node 구문 검사: 통과
-- js/project-data.js / firebase-config.js 구문 검사: 통과
-- APP_VERSION 및 모듈 캐시 쿼리 v2.6.5 갱신: 확인
-- Firestore 서버 시각 샘플링 함수 연결: 확인
-- 시험시간 종료 강제 제출 함수: 확인
-- 개인 추가시간을 반영한 학생별 deadline 계산: 확인
-- Firestore transaction 기반 제출 확정: 확인
-- 교사 '평가 종료' 시 미제출 답안 선확정 후 CLOSED 전환: 확인
-- 자동 마감 시 남은 추가시간 학생이 없을 때 CLOSED 자동 전환: 확인
-- CSV 제출사유 열: 확인
-- firestore.rules: v2.6.4와 SHA-256 동일 (규칙 재게시 불필요)
-
-주의: 브라우저/Firebase 실제 통합 동작은 배포 후 관리자 테스트 모드 또는 짧은 테스트 평가로 최종 확인 권장.
+- APP_VERSION / 모듈 캐시 쿼리 v2.6.8 : 확인
+- 평가 삭제 / 개인 1분 단위 추가시간 : 누적 유지
+- 종료 후 통신 유예시간 30초 : app/db 통일
+- 강제확정 시 답안 본문 미수정 : 확인
+- 강제확정 감사시각 및 기준 저장시각 기록 : 반영
+- CSV 복구후보/복구문항 포함 : 반영
+- Firestore Rules 변경 : 없음
