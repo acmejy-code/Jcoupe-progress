@@ -1,17 +1,9 @@
-JCOUP 관리자 v3.1.0 정적 검증 결과
-
-- 관리자 버전 3.1.0: 확인
-- 전역 마감 busy 제거: 확인
-- 평가별 finalize lock: 확인
-- 평가별 병렬 마감: 확인
-- 즉시 종료 assessmentId 경로: 확인
-- 만료 확정 assessmentId 하위 attempts: 확인
-- 전체 확정 assessmentId 하위 attempts: 확인
-- 평가목록 접기: 확인
-- Firestore Rules 동일: 확인
-
-평가 생명주기 점검:
-- WAITING/OPEN/CLOSED 변경은 선택한 assessmentId의 private/public 문서만 갱신합니다.
-- 자동 마감은 assessmentId별 독립 lock으로 실행되어 한 평가의 지연이 다른 평가 실행을 막지 않습니다.
-- 강제 제출/CSV/삭제/초기화는 각 assessmentId 하위 attempts/sessions만 대상으로 합니다.
-- Firestore Rules 변경 없음. 기존 데이터 구조 유지.
+JCOUP 관리자 v3.1.1 정적 검증 결과
+- 관리자 버전 3.1.1: 확인
+- JavaScript 문법 검사: 통과
+- 평가 종료: private/public CLOSED 서버 재확인 로직 포함
+- 평가 삭제: private/public 서버 부재 재확인 로직 포함
+- 평가 목록: pending write 성공 표시 억제
+- 중복 생성 방지: 저장 중 잠금 + 동일 조건 경고
+- 평가 ID 표시: 목록/상세 확인
+- Firestore Rules: v3.1.0과 동일

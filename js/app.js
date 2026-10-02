@@ -1,4 +1,4 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.1.0";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.1.1";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -10,14 +10,14 @@ import {
   watchAssessmentAttempts, resetAssessmentRun, setAssessmentDuration, extendAssessmentTime, extendAssessmentStudentTime,
   reopenAssessmentAttempt, finalizeExpiredAssessmentAttempts, finalizeAllAssessmentAttempts, getAssessmentServerTimeMs,
   closeAssessmentStatusOnly, closeAssessmentImmediate, setAssessmentStatusVerified, getAssessmentRecoverySnapshots
-} from "./db.js?v=3.1.0";
+} from "./db.js?v=3.1.1";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const pad=n=>String(n).padStart(2,"0");
 const toYmd=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const parseLocalDate=s=>new Date(`${s}T12:00:00`);
-const ASSESSMENT_FINALIZE_GRACE_MS=15000; // v3.1.0: 미제출자가 있을 때만 0초 후 15초 통신 유예
+const ASSESSMENT_FINALIZE_GRACE_MS=15000; // v3.1.1: 미제출자가 있을 때만 0초 후 15초 통신 유예
 
 function assessmentTargetStudentIds(a){
   const target=(a?.targetClasses?.length?a.targetClasses:projectClasses()).map(String);
@@ -76,6 +76,7 @@ let selectedAssessmentId=null;
 let selectedMonitorClass="";
 let assessmentAttempts=[];
 let editingAssessmentId=null;
+let assessmentSaveInFlight=false;
 let draggedStudentId=null;
 let seatEditorSlots=[];
 let seatEditorDragIndex=null;
@@ -899,6 +900,12 @@ function statusInfo(studentId){
 }
 
 function assessmentStatusLabel(v){return v==="WAITING"?"입장 대기":v==="OPEN"?"응시 중":v==="CLOSED"?"종료":"준비";}
+function assessmentClientFingerprint(a){
+  const classes=(Array.isArray(a?.targetClasses)?a.targetClasses:[]).map(String).sort().join("|");
+  const qCount=Array.isArray(a?.questions)?a.questions.length:Number(a?.questionCount||0);
+  return [String(a?.title||"").trim(),classes,Number(a?.durationMinutes||0),qCount].join("::");
+}
+function assessmentShortId(a){const id=String(a?.id||"");return id?`#${id.slice(-8).toUpperCase()}`:"#-";}
 function fmtDateTime(v){
   if(!v)return "-"; try{const d=v?.toDate?v.toDate():new Date(v);if(Number.isNaN(d.getTime()))return "-";return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;}catch{return "-";}
 }
@@ -921,14 +928,27 @@ function openAssessmentDialog(a=null){
 }
 async function saveAssessmentForm(e){
   e.preventDefault();
+  if(assessmentSaveInFlight)return;
   const questions=[...document.querySelectorAll(".question-edit-row")].map((row,i)=>({id:`q${i+1}`,prompt:row.querySelector(".question-prompt").value.trim(),placeholder:row.querySelector(".question-placeholder").value.trim(),required:true})).filter(q=>q.prompt);
   const targetClasses=[...$("assessmentClassChecks").querySelectorAll("input:checked")].map(x=>x.value);
   const old=editingAssessmentId?assessments.find(x=>x.id===editingAssessmentId):null;
+  const targetId=editingAssessmentId||makeId(); // v3.1.1: 저장 시작 시 ID를 한 번만 생성해 연속 클릭 중복 생성을 막음
+  const draft={...(old||{}),id:targetId,title:$("assessmentTitle").value,description:$("assessmentDescription").value,instructions:$("assessmentInstructions").value,accessCode:$("assessmentAccessCode").value,targetClasses,durationMinutes:Number($("assessmentDuration").value||0),questions,status:old?.status||"DRAFT"};
+  if(!editingAssessmentId){
+    const fp=assessmentClientFingerprint(draft);
+    const same=assessments.filter(a=>assessmentClientFingerprint(a)===fp);
+    if(same.length&&!confirm(`같은 제목·대상 반·시험시간·문항 수의 평가가 이미 ${same.length}개 있습니다.\n\n기존 평가를 수정하려는 것이 아니라 새 평가를 하나 더 만드는 것이 맞습니까?`))return;
+  }
+  const submit=$("saveAssessmentBtn");
+  assessmentSaveInFlight=true;
+  if(submit){submit.disabled=true;submit.textContent="저장 중…";}
   try{
-    const saved=await upsertAssessment({...(old||{}),id:editingAssessmentId||makeId(),title:$("assessmentTitle").value,description:$("assessmentDescription").value,instructions:$("assessmentInstructions").value,accessCode:$("assessmentAccessCode").value,targetClasses,durationMinutes:Number($("assessmentDuration").value||0),questions,status:old?.status||"DRAFT"});
-    selectedAssessmentId=saved.id;$("assessmentDialog").close();toast("수행평가를 저장했습니다.");
+    const saved=await upsertAssessment(draft);
+    selectedAssessmentId=saved.id;$("assessmentDialog").close();toast(`수행평가를 저장했습니다. (${assessmentShortId(saved)})`);
   }catch(err){alert("수행평가 저장 실패: "+err.message);}
+  finally{assessmentSaveInFlight=false;if(submit){submit.disabled=false;submit.textContent="저장";}}
 }
+
 function setRosterTab(name){
   document.querySelectorAll("[data-roster-tab]").forEach(b=>b.classList.toggle("active",b.dataset.rosterTab===name));
   ["list","seat"].forEach(k=>$("rosterTab-"+k)?.classList.toggle("active",k===name));
@@ -1453,7 +1473,7 @@ async function runExpiredFinalize(){
   await syncAssessmentServerClock().catch(()=>{});
   const now=assessmentNowMs()||Date.now();
 
-  // v3.1.0: 평가별 독립 실행. 한 평가의 네트워크 지연/강제확정 실패가
+  // v3.1.1: 평가별 독립 실행. 한 평가의 네트워크 지연/강제확정 실패가
   // 다른 반 평가의 입장·시작·종료를 기다리게 하지 않는다.
   await Promise.allSettled(open.map(a=>finalizeOneAssessmentLifecycle(a,now)));
 }
@@ -1469,7 +1489,7 @@ function renderAssessments(){
     :selected?.status==="WAITING"
       ?`<label class="assessment-duration-inline">시험시간 <input id="waitingDurationInput" type="number" min="1" max="300" value="${Number(selected.durationMinutes||50)}">분</label><button class="btn success-btn" id="startExamBtn">시험 시작</button>`
       :"";
-  root.innerHTML=`<div class="assessment-toolbar"><div><h2>수행평가 응시 관리</h2><div class="small muted">각 수행평가는 평가 ID별로 독립 운영됩니다. 한 반의 평가가 지연·종료 실패 상태여도 다른 반 평가의 입장·시작·종료에는 영향을 주지 않습니다.</div></div><div class="assessment-actions"><button class="btn" id="manageRosterBtn">학생 명단·좌석</button><button class="btn" id="studentTestBtn">학생 화면 테스트</button><button class="btn primary" id="newAssessmentBtn">＋ 수행평가 만들기</button></div></div><div class="assessment-layout ${assessmentListCollapsed?"list-collapsed":""}"><div class="assessment-list-panel card"><div class="assessment-list-head"><h3>평가 목록</h3><button type="button" class="assessment-list-toggle" id="assessmentListToggleBtn" title="${assessmentListCollapsed?"평가 목록 펼치기":"평가 목록 접기"}" aria-label="${assessmentListCollapsed?"평가 목록 펼치기":"평가 목록 접기"}">${assessmentListCollapsed?"▶":"◀"}</button></div><div class="assessment-list">${assessments.length?assessments.map(a=>`<button class="assessment-row ${a.id===selectedAssessmentId?"active":""}" data-assessment-id="${esc(a.id)}"><span><b>${esc(a.title)}</b><small>${esc((a.targetClasses||[]).join("·"))}반 · ${a.questions?.length||0}문항 · ${Number(a.durationMinutes||0)}분</small></span><em class="assessment-status ${String(a.status).toLowerCase()}">${assessmentStatusLabel(a.status)}</em></button>`).join(""):`<div class="empty">아직 만든 수행평가가 없습니다.</div>`}</div></div><div class="assessment-main">${selected?`<div class="card assessment-control"><div class="assessment-control-head"><div><div class="label">${assessmentStatusLabel(selected.status)}</div><h3>${esc(selected.title)}</h3><p>${esc(selected.description||"학생 안내 없음")}</p></div><div class="assessment-control-side"><div class="code-box" id="expandAccessCodeBtn" role="button" tabindex="0" title="클릭하면 응시코드를 크게 표시합니다"><span>응시코드</span><strong>${esc(selected.accessCode)}</strong></div>${timer}</div></div><div class="assessment-control-actions"><button class="btn" id="editAssessmentBtn">수정</button>${preStartControls}${selected.status==="OPEN"?`<button class="btn danger" id="closeAssessmentBtn2">평가 종료</button><button class="btn" id="extendAssessment5Btn">전체 +5분</button><button class="btn" id="extendAssessment10Btn">전체 +10분</button>`:""}${selected.status==="WAITING"?`<button class="btn danger" id="cancelWaitingAssessmentBtn">대기실 닫기</button>`:""}<button class="btn" id="exportAssessmentBtn">응답 CSV</button><button class="btn" id="resetAssessmentBtn">테스트 기록 초기화</button><button class="btn danger" id="deleteAssessmentDirectBtn">평가 삭제</button><label class="monitor-class-label">감독 반 <select id="monitorClassSelect">${(selected.targetClasses||[]).map(c=>`<option value="${esc(c)}" ${c===selectedMonitorClass?"selected":""}>${esc(c)}반</option>`).join("")}</select></label></div></div><div id="assessmentMonitor" class="card assessment-monitor"></div>`:`<div class="card assessment-empty"><b>수행평가를 만들어 주세요.</b></div>`}</div></div>`;
+  root.innerHTML=`<div class="assessment-toolbar"><div><h2>수행평가 응시 관리</h2><div class="small muted">각 수행평가는 평가 ID별로 독립 운영됩니다. 한 반의 평가가 지연·종료 실패 상태여도 다른 반 평가의 입장·시작·종료에는 영향을 주지 않습니다.</div></div><div class="assessment-actions"><button class="btn" id="manageRosterBtn">학생 명단·좌석</button><button class="btn" id="studentTestBtn">학생 화면 테스트</button><button class="btn primary" id="newAssessmentBtn">＋ 수행평가 만들기</button></div></div><div class="assessment-layout ${assessmentListCollapsed?"list-collapsed":""}"><div class="assessment-list-panel card"><div class="assessment-list-head"><h3>평가 목록</h3><button type="button" class="assessment-list-toggle" id="assessmentListToggleBtn" title="${assessmentListCollapsed?"평가 목록 펼치기":"평가 목록 접기"}" aria-label="${assessmentListCollapsed?"평가 목록 펼치기":"평가 목록 접기"}">${assessmentListCollapsed?"▶":"◀"}</button></div><div class="assessment-list">${assessments.length?assessments.map(a=>`<button class="assessment-row ${a.id===selectedAssessmentId?"active":""}" data-assessment-id="${esc(a.id)}"><span><b>${esc(a.title)}</b><small>${esc((a.targetClasses||[]).join("·"))}반 · ${a.questions?.length||0}문항 · ${Number(a.durationMinutes||0)}분 · ${esc(assessmentShortId(a))}</small></span><em class="assessment-status ${String(a.status).toLowerCase()}">${assessmentStatusLabel(a.status)}</em></button>`).join(""):`<div class="empty">아직 만든 수행평가가 없습니다.</div>`}</div></div><div class="assessment-main">${selected?`<div class="card assessment-control"><div class="assessment-control-head"><div><div class="label">${assessmentStatusLabel(selected.status)}</div><h3>${esc(selected.title)}</h3><p>${esc(selected.description||"학생 안내 없음")}</p><div class="small muted">평가 ID ${esc(selected.id)}</div></div><div class="assessment-control-side"><div class="code-box" id="expandAccessCodeBtn" role="button" tabindex="0" title="클릭하면 응시코드를 크게 표시합니다"><span>응시코드</span><strong>${esc(selected.accessCode)}</strong></div>${timer}</div></div><div class="assessment-control-actions"><button class="btn" id="editAssessmentBtn">수정</button>${preStartControls}${selected.status==="OPEN"?`<button class="btn danger" id="closeAssessmentBtn2">평가 종료</button><button class="btn" id="extendAssessment5Btn">전체 +5분</button><button class="btn" id="extendAssessment10Btn">전체 +10분</button>`:""}${selected.status==="WAITING"?`<button class="btn danger" id="cancelWaitingAssessmentBtn">대기실 닫기</button>`:""}<button class="btn" id="exportAssessmentBtn">응답 CSV</button><button class="btn" id="resetAssessmentBtn">테스트 기록 초기화</button><button class="btn danger" id="deleteAssessmentDirectBtn">평가 삭제</button><label class="monitor-class-label">감독 반 <select id="monitorClassSelect">${(selected.targetClasses||[]).map(c=>`<option value="${esc(c)}" ${c===selectedMonitorClass?"selected":""}>${esc(c)}반</option>`).join("")}</select></label></div></div><div id="assessmentMonitor" class="card assessment-monitor"></div>`:`<div class="card assessment-empty"><b>수행평가를 만들어 주세요.</b></div>`}</div></div>`;
   $("manageRosterBtn").onclick=openRosterDialog;$("studentTestBtn").onclick=openStudentTestDialog;$("newAssessmentBtn").onclick=()=>openAssessmentDialog();
   const listToggle=$("assessmentListToggleBtn");if(listToggle)listToggle.onclick=()=>{assessmentListCollapsed=!assessmentListCollapsed;try{localStorage.setItem(ASSESSMENT_LIST_COLLAPSE_KEY,assessmentListCollapsed?"1":"0");}catch{}renderAssessments();startAttemptWatch();};
   document.querySelectorAll("[data-assessment-id]").forEach(b=>b.onclick=()=>{closeAccessCodePresentation();closeFloatingExamTimer();selectedAssessmentId=b.dataset.assessmentId;assessmentAttempts=[];const aa=assessments.find(x=>x.id===selectedAssessmentId);selectedMonitorClass=aa?.targetClasses?.[0]||"";renderAssessments();startAttemptWatch();});
@@ -1503,10 +1523,14 @@ function renderAssessments(){
       if(!confirm("평가를 지금 종료할까요?\n\n평가 상태는 즉시 종료되어 학생 목록에서 닫히며, 아직 제출하지 않은 답안은 서버의 마지막 저장본을 기준으로 백그라운드 확정합니다. 기존 답안은 삭제되지 않습니다."))return;
       closeBtn.disabled=true;closeBtn.textContent="즉시 종료 중…";
       try{
-        // v3.1.0 핵심: 답안 확정 완료를 기다리지 않고 평가 상태부터 원자적으로 CLOSED 처리한다.
+        // v3.1.1 핵심: 답안 확정 완료를 기다리지 않고 평가 상태부터 원자적으로 CLOSED 처리한다.
         // 이 단계가 성공하면 다른 반 평가의 대기실/시험 시작을 즉시 진행할 수 있다.
-        await closeAssessmentImmediate(selected.id,"TEACHER_CLOSE_IMMEDIATE");
-        toast("평가를 즉시 종료했습니다. 미제출 답안은 백그라운드에서 확정합니다.");
+        const closed=await closeAssessmentImmediate(selected.id,"TEACHER_CLOSE_IMMEDIATE");
+        if(closed?.sameFingerprintOpen>0){
+          alert(`선택한 평가 ${assessmentShortId(selected)}는 서버에서 종료 확정되었습니다.\n\n다만 제목·반·시험시간·문항 수가 같은 다른 평가가 ${closed.sameFingerprintOpen}개 아직 '응시 중'입니다. 목록의 평가 ID를 확인해 각각 종료해 주세요.`);
+        }else{
+          toast(`평가를 서버에서 종료 확정했습니다. (${assessmentShortId(selected)})`);
+        }
         finalizeAllAssessmentAttempts(selected.id,"TEACHER_CLOSE").then(r=>{
           if(r.failed>0)console.warn(`백그라운드 답안 확정 실패 ${r.failed}명`,r.errorCodes||[]);
           else if(r.finalized>0)toast(`${r.finalized}명의 미제출 답안을 서버 저장본으로 확정했습니다.`);
@@ -1532,7 +1556,15 @@ function renderAssessments(){
       if(selected.status==="OPEN"){alert("현재 응시 중인 평가는 바로 삭제할 수 없습니다. 평가 종료 후 삭제해 주세요.");return;}
       if(!confirm(`「${selected.title}」 평가를 완전히 삭제할까요?\n\n응시 기록·인증 세션·문항 데이터도 함께 삭제되며 복구할 수 없습니다.`))return;
       if(!confirm("정말 삭제합니다. 이 작업은 되돌릴 수 없습니다."))return;
-      try{const r=await deleteAssessment(selected.id);selectedAssessmentId=null;assessmentAttempts=[];toast(`평가를 삭제했습니다. (응시기록 ${r?.attempts||0}건 정리)`);}
+      try{
+        const r=await deleteAssessment(selected.id);
+        selectedAssessmentId=null;assessmentAttempts=[];
+        if(r?.sameFingerprintRemaining>0){
+          alert(`선택한 평가 ${assessmentShortId(selected)}는 Firestore 서버에서 삭제 확인되었습니다.\n\n다만 제목·반·시험시간·문항 수가 같은 별도 평가 ID가 ${r.sameFingerprintRemaining}개 남아 있습니다.\n목록에 같은 제목이 다시 보여도 삭제한 평가가 부활한 것이 아니라 다른 평가입니다.`);
+        }else{
+          toast(`평가를 서버에서 삭제 확인했습니다. (${assessmentShortId(selected)} · 응시기록 ${r?.attempts||0}건 정리)`);
+        }
+      }
       catch(err){alert(`평가 삭제 중 오류가 발생했습니다.\n${err.message||err}`);}
     };
     $("monitorClassSelect").onchange=e=>{selectedMonitorClass=e.target.value;renderAssessmentMonitor();};
@@ -1611,7 +1643,7 @@ function bind(){
   $("closeProjectDialog").onclick=()=>$("projectDialog").close();$("cancelProjectBtn").onclick=()=>$("projectDialog").close();$("projectForm").onsubmit=saveProjectForm;
   $("closeMaterialDialog").onclick=()=>$("materialDialog").close();$("cancelMaterialBtn").onclick=()=>$("materialDialog").close();$("materialForm").onsubmit=saveMaterialForm;$("deleteMaterialBtn").onclick=deleteEditingMaterial;
   $("closeNoticeDialog").onclick=()=>$("noticeDialog").close();$("cancelNoticeBtn").onclick=()=>$("noticeDialog").close();$("noticeForm").onsubmit=saveNoticeForm;$("addNoticeDriveBtn").onclick=addNoticeDriveAttachment;$("deleteNoticeBtn").onclick=deleteEditingNotice;
-  $("closeAssessmentDialog").onclick=()=>$("assessmentDialog").close();$("cancelAssessmentBtn").onclick=()=>$("assessmentDialog").close();$("assessmentForm").onsubmit=saveAssessmentForm;$("addQuestionBtn").onclick=()=>addQuestionEditor({});$("generateAccessCodeBtn").onclick=()=>$("assessmentAccessCode").value=generateAccessCode();$("deleteAssessmentBtn").onclick=async()=>{if(!editingAssessmentId)return;const target=assessments.find(x=>x.id===editingAssessmentId);if(target?.status==="OPEN"){alert("현재 응시 중인 평가는 평가 종료 후 삭제해 주세요.");return;}if(confirm("이 수행평가를 완전히 삭제할까요?\n응시 기록과 인증 세션도 함께 삭제되며 복구할 수 없습니다.")){try{await deleteAssessment(editingAssessmentId);$("assessmentDialog").close();selectedAssessmentId=null;assessmentAttempts=[];toast("수행평가를 삭제했습니다.");}catch(err){alert(err.message);}}};
+  $("closeAssessmentDialog").onclick=()=>$("assessmentDialog").close();$("cancelAssessmentBtn").onclick=()=>$("assessmentDialog").close();$("assessmentForm").onsubmit=saveAssessmentForm;$("addQuestionBtn").onclick=()=>addQuestionEditor({});$("generateAccessCodeBtn").onclick=()=>$("assessmentAccessCode").value=generateAccessCode();$("deleteAssessmentBtn").onclick=async()=>{if(!editingAssessmentId)return;const target=assessments.find(x=>x.id===editingAssessmentId);if(target?.status==="OPEN"){alert("현재 응시 중인 평가는 평가 종료 후 삭제해 주세요.");return;}if(confirm("이 수행평가를 완전히 삭제할까요?\n응시 기록과 인증 세션도 함께 삭제되며 복구할 수 없습니다.")){try{const r=await deleteAssessment(editingAssessmentId);$("assessmentDialog").close();selectedAssessmentId=null;assessmentAttempts=[];if(r?.sameFingerprintRemaining>0)alert(`선택한 평가는 서버에서 삭제되었습니다. 다만 동일 조건의 별도 평가 ID가 ${r.sameFingerprintRemaining}개 남아 있습니다.`);else toast("수행평가를 서버에서 삭제 확인했습니다.");}catch(err){alert(err.message);}}};
   $("closeMonitorStudentDialog").onclick=()=>$("monitorStudentDialog").close();
   const addStudentMinutes=async minutes=>{if(!monitorControlStudentId)return;const n=Math.max(1,Math.min(120,Math.floor(Number(minutes||0))));if(!Number.isFinite(n))return;await extendAssessmentStudentTime(selectedAssessmentId,monitorControlStudentId,n);toast(`해당 학생에게 ${n}분을 추가했습니다.`);$("monitorStudentDialog").close();};
   $("monitorAdd1Btn").onclick=()=>addStudentMinutes(1);
