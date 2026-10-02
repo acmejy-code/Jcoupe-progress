@@ -1,4 +1,4 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.2.1";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.3.0";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -8,16 +8,16 @@ import {
   publishStudentPortalData, studentPortalUrl,
   replaceStudentsForClass, saveSeatLayout, upsertAssessment, setAssessmentStatus, deleteAssessment,
   watchAssessmentAttempts, resetAssessmentRun, setAssessmentDuration, extendAssessmentTime, extendAssessmentStudentTime,
-  reopenAssessmentAttempt, finalizeExpiredAssessmentAttempts, finalizeAllAssessmentAttempts, getAssessmentServerTimeMs,
+  reopenAssessmentAttempt,
   closeAssessmentStatusOnly, closeAssessmentImmediate, setAssessmentStatusVerified, getAssessmentRecoverySnapshots
-} from "./db.js?v=3.2.1";
+} from "./db.js?v=3.3.0";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const pad=n=>String(n).padStart(2,"0");
 const toYmd=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const parseLocalDate=s=>new Date(`${s}T12:00:00`);
-const ASSESSMENT_FINALIZE_GRACE_MS=15000; // v3.2.1: 미제출자가 있을 때만 0초 후 15초 통신 유예
+const ASSESSMENT_FINALIZE_GRACE_MS=15000; // v3.3.0: 학생 최종 제출 재시도를 위한 마감 후 15초 상태 종료 유예
 
 function assessmentTargetStudentIds(a){
   const target=(a?.targetClasses?.length?a.targetClasses:projectClasses()).map(String);
@@ -941,7 +941,7 @@ async function saveAssessmentForm(e){
   const questions=[...document.querySelectorAll(".question-edit-row")].map((row,i)=>({id:`q${i+1}`,prompt:row.querySelector(".question-prompt").value.trim(),placeholder:row.querySelector(".question-placeholder").value.trim(),required:true})).filter(q=>q.prompt);
   const targetClasses=[...$("assessmentClassChecks").querySelectorAll("input:checked")].map(x=>x.value);
   const old=editingAssessmentId?assessments.find(x=>x.id===editingAssessmentId):null;
-  const targetId=editingAssessmentId||makeId(); // v3.2.1: 저장 시작 시 ID를 한 번만 생성해 연속 클릭 중복 생성을 막음
+  const targetId=editingAssessmentId||makeId(); // v3.3.0: 저장 시작 시 ID를 한 번만 생성해 연속 클릭 중복 생성을 막음
   const draft={...(old||{}),id:targetId,title:$("assessmentTitle").value,description:$("assessmentDescription").value,instructions:$("assessmentInstructions").value,accessCode:$("assessmentAccessCode").value,targetClasses,durationMinutes:Number($("assessmentDuration").value||0),questions,status:old?.status||"DRAFT"};
   if(!editingAssessmentId){
     const fp=assessmentClientFingerprint(draft);
@@ -1399,16 +1399,6 @@ function presentationKeyboardActivate(el,fn){
 }
 
 function assessmentNowMs(){return Date.now()+Number(assessmentServerOffsetMs||0);}
-async function syncAssessmentServerClock(force=false){
-  if(storageMode()!=="cloud")return;
-  const now=Date.now();
-  if(!force&&assessmentServerClockSyncedAt&&now-assessmentServerClockSyncedAt<60000)return;
-  try{
-    const serverMs=await getAssessmentServerTimeMs();
-    if(serverMs){assessmentServerOffsetMs=serverMs-Date.now();assessmentServerClockSyncedAt=Date.now();}
-  }catch(err){console.warn("시험 서버 시각 동기화 실패",err);}
-}
-
 function updateAdminAssessmentClock(){
   const el=$("assessmentAdminTimer");
   const floating=$("floatingExamTimer"),floatingValue=$("floatingExamTimerValue"),floatingMeta=$("floatingExamTimerMeta");
@@ -1432,42 +1422,31 @@ function updateAdminAssessmentClock(){
     floating.classList.toggle("timer-expired",ms<=0);
   }
 }
+const assessmentAutoCloseAttempted=new Set();
 async function finalizeOneAssessmentLifecycle(a,now){
   const id=String(a?.id||"");
-  if(!id||assessmentFinalizeLocks.has(id))return;
+  if(!id||assessmentFinalizeLocks.has(id)||assessmentAutoCloseAttempted.has(id))return;
+  const commonDeadline=assessmentDeadlineMs(a);
+  if(!commonDeadline||now<commonDeadline+ASSESSMENT_FINALIZE_GRACE_MS)return;
+
+  // v3.3.0 QUOTA-SAFE:
+  // 자동 마감은 attempts 전체 읽기/강제 제출을 하지 않는다.
+  // 평가 상태 문서만 한 번 CLOSED로 바꾼다. 학생의 IN_PROGRESS -> SUBMITTED 쓰기는
+  // Firestore Rules상 평가 상태가 CLOSED여도 자기 문서에서 계속 허용되므로
+  // 이미 열린 학생 화면의 최종 제출/재시도는 막지 않는다.
+  assessmentAutoCloseAttempted.add(id);
   assessmentFinalizeLocks.add(id);
   try{
-    // 선택 중인 평가는 현재 감시 중인 해당 평가의 attempts만 사용한다.
-    // 다른 평가의 attempts / 상태는 절대 참조하지 않는다.
-    if(id===String(selectedAssessmentId||"")&&selectedAssessmentAllSubmitted(a)){
-      await closeAssessmentImmediate(id,"ALL_SUBMITTED");
-      toast("대상 학생 전원이 제출하여 평가를 자동 종료했습니다.");
-      return;
+    await closeAssessmentImmediate(id,"TIME_EXPIRED_STATUS_ONLY");
+    patchAssessmentLocal(id,{status:"CLOSED",closeReason:"TIME_EXPIRED_STATUS_ONLY",closedAt:new Date()});
+    if(id===String(selectedAssessmentId||"")){
+      renderAssessments();startAttemptWatch();
+      toast("시험시간이 종료되어 평가 상태를 닫았습니다. 학생의 최종 제출 재시도는 계속 허용됩니다.");
     }
-
-    const commonDeadline=assessmentDeadlineMs(a);
-    if(!commonDeadline||now<commonDeadline+ASSESSMENT_FINALIZE_GRACE_MS)return;
-
-    let result=null;
-    try{result=await finalizeExpiredAssessmentAttempts(id,now);}catch(err){console.warn(`${a.title}: 마감 답안 확정 실패`,err);}
-    if(result?.finalized>0&&id===String(selectedAssessmentId||""))toast(`시험시간이 끝난 ${result.finalized}명의 마지막 저장 답안을 자동 제출했습니다.`);
-
-    // 개인 추가시간이 남아 있는 학생만 해당 평가를 계속 OPEN으로 둔다.
-    if(Number(result?.remainingUnexpired||0)>0)return;
-
-    if(result&&Number(result.failed||0)===0){
-      await closeAssessmentImmediate(id,"TIME_EXPIRED");
-      if(id===String(selectedAssessmentId||""))toast("시험시간이 종료되어 평가를 자동 종료했습니다.");
-      return;
-    }
-
-    // 해당 평가 하나만 실패 안전 종료. 다른 평가의 대기실/시험 상태에는 손대지 않는다.
-    if(now>=commonDeadline+60000){
-      try{
-        await closeAssessmentImmediate(id,"TIME_EXPIRED_FAILSAFE");
-        if(id===String(selectedAssessmentId||""))toast("마감 지연 안전장치로 평가 상태를 종료했습니다. 답안은 보존됩니다.");
-      }catch(err){console.warn(`${a.title}: 마감 지연 안전 종료 실패`,err);}
-    }
+  }catch(err){
+    console.warn(`${a.title}: 자동 상태 종료 실패`,err);
+    // 실패 시 같은 페이지에서 3초마다 재요청하지 않는다.
+    // 교사가 상태를 확인한 뒤 '평가 종료'를 직접 눌러 한 번만 재시도할 수 있다.
   }finally{
     assessmentFinalizeLocks.delete(id);
   }
@@ -1475,15 +1454,12 @@ async function finalizeOneAssessmentLifecycle(a,now){
 
 async function runExpiredFinalize(){
   if(storageMode()!=="cloud")return;
+  const now=Date.now();
   const open=assessments.filter(a=>a.status==="OPEN"&&assessmentDeadlineMs(a));
   if(!open.length)return;
 
-  // 서버 시각 동기화 실패가 특정 평가의 생명주기를 막지 않도록 보조적으로만 사용한다.
-  await syncAssessmentServerClock().catch(()=>{});
-  const now=assessmentNowMs()||Date.now();
-
-  // v3.2.1: 평가별 독립 실행. 한 평가의 네트워크 지연/강제확정 실패가
-  // 다른 반 평가의 입장·시작·종료를 기다리게 하지 않는다.
+  // v3.3.0: 3초마다 attempts 컬렉션을 읽고 강제제출하던 루프 제거.
+  // 각 평가마다 마감 후 상태 종료 요청은 페이지 세션당 최대 1회만 보낸다.
   await Promise.allSettled(open.map(a=>finalizeOneAssessmentLifecycle(a,now)));
 }
 
@@ -1533,11 +1509,11 @@ function renderAssessments(){
       }finally{if(startBtn.isConnected){startBtn.disabled=false;startBtn.textContent="시험 시작";}}
     };
     const closeBtn=$("closeAssessmentBtn2");if(closeBtn)closeBtn.onclick=async()=>{
-      if(!confirm("평가를 지금 종료할까요?\n\n평가 상태는 즉시 종료되어 학생 목록에서 닫히며, 아직 제출하지 않은 답안은 서버의 마지막 저장본을 기준으로 백그라운드 확정합니다. 기존 답안은 삭제되지 않습니다."))return;
+      if(!confirm("평가를 지금 종료할까요?\n\n평가 상태만 즉시 종료합니다. 이미 열린 학생 화면의 최종 제출·재시도는 계속 허용되며, 기존 답안은 삭제되지 않습니다."))return;
       closeBtn.disabled=true;closeBtn.textContent="즉시 종료 중…";
       try{
-        // v3.2.1: 평가 종료는 Firestore REST commit을 우선 사용해 SDK pending-write queue와 분리한다.
-        // REST 실패 시에만 SDK 연결을 초기화하고 한 번 재시도한다.
+        // v3.3.0: 평가 종료는 Firestore REST commit을 우선 사용해 SDK pending-write queue와 분리한다.
+        // 429 quota 오류는 재시도하지 않고 즉시 중단하며, 그 외 오류만 SDK로 한 번 재시도한다.
         const closed=await closeAssessmentImmediate(selected.id,"TEACHER_CLOSE_IMMEDIATE");
         patchAssessmentLocal(selected.id,{status:"CLOSED",closeReason:"TEACHER_CLOSE_IMMEDIATE",closedAt:new Date()});
         renderAssessments();startAttemptWatch();
@@ -1546,10 +1522,6 @@ function renderAssessments(){
         }else{
           toast(`평가 종료가 서버에 반영되었습니다. (${assessmentShortId(selected)})`);
         }
-        finalizeAllAssessmentAttempts(selected.id,"TEACHER_CLOSE").then(r=>{
-          if(r.failed>0)console.warn(`백그라운드 답안 확정 실패 ${r.failed}명`,r.errorCodes||[]);
-          else if(r.finalized>0)toast(`${r.finalized}명의 미제출 답안을 서버 저장본으로 확정했습니다.`);
-        }).catch(err=>console.warn("백그라운드 답안 확정 실패",err));
       }catch(err){
         alert(`평가 종료 요청을 완료하지 못했습니다.\n${err.message||err}\n\n버튼은 다시 사용할 수 있습니다. 같은 버튼을 연속으로 누르기보다 잠시 뒤 목록 상태를 확인해 주세요. 답안 데이터는 삭제되지 않습니다.`);
       }finally{

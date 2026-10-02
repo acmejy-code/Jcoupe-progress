@@ -1,16 +1,7 @@
-JCOUP 관리자 v3.2.1 검증 결과
-
-핵심 수정
-- 학생 입장 열기(WAITING): SDK getDoc 선행 제거, 화면에 이미 로드된 서버 스냅샷 + REST commit 사용
-- 시험시간 저장: SDK getDoc 선행 제거, 선택 평가 상태 + REST commit 사용
-- 시험 시작(OPEN): SDK getDoc 선행 제거, REST commit 사용
-- 평가 종료(CLOSED): 기존 v3.2 REST commit 유지
-- 평가 삭제: 기존 v3.2 REST commit 유지
-- 평가 목록: 서버 스냅샷만 화면 반영 유지
-- 반/평가 ID별 독립 운영 유지
-- 학생 포털 v1.6.8 호환, Firestore Rules 변경 없음
-
-정적 검증
-- app.js 문법 검사 통과
-- db.js 문법 검사 통과
-- project-data.js 문법 검사 통과
+JCOUP 관리자 v3.3.0 검증 결과
+- JavaScript 문법 검사: 통과
+- 평가별 독립 상태 처리 유지
+- 3초 주기 attempts 전체 조회/강제제출 제거 확인
+- 429 quota 오류 시 SDK 중복 재시도 차단 확인
+- 평가 목록 접기 기능 유지
+- Firestore Rules 변경 없음

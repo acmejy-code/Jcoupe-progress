@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.2.1";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.2.1";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.3.0";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.3.0";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -247,7 +247,7 @@ function startCloudAssessmentListener(){
     firebase.fsMod.orderBy("updatedAt", "desc")
   );
   unsubscribeAssessments = firebase.fsMod.onSnapshot(q,{includeMetadataChanges:true}, snap=>{
-    // v3.2.1: 수행평가 목록은 오직 Firestore 서버 스냅샷만 화면에 반영한다.
+    // v3.3.0: 수행평가 목록은 오직 Firestore 서버 스냅샷만 화면에 반영한다.
     // 캐시/지연보상 스냅샷이 OPEN/삭제 전 상태를 다시 그려 '원상복귀'처럼 보이는 현상을 차단한다.
     if(snap.metadata?.hasPendingWrites || snap.metadata?.fromCache) return;
     const rows=snap.docs.map(d=>({id:d.id,...d.data(),projectId:activeProjectId}));
@@ -883,17 +883,25 @@ async function resetFirestoreNetworkBestEffort_(){
     }
   }catch(err){console.warn('Firestore 연결 복구 실패',err);}
 }
+function isFirestoreQuotaError_(err){
+  const status=Number(err?.httpStatus||0);
+  const msg=String(err?.message||err||"").toLowerCase();
+  return status===429 || msg.includes("quota exceeded") || msg.includes("resource_exhausted") || msg.includes("resource exhausted");
+}
 async function commitAssessmentLifecycle_(writes,label,sdkBatchFactory=null){
-  // v3.2.1: 평가 생명주기(입장/시작/종료/삭제)는 REST commit을 우선 사용한다.
-  // Firestore JS SDK의 로컬 write queue가 이전 지연 쓰기에 막혀도 새 평가가 간섭받지 않게 한다.
+  // v3.3.0: 평가 생명주기는 REST commit을 우선 사용한다.
+  // 429/RESOURCE_EXHAUSTED는 같은 Firestore 프로젝트의 사용량 한도 문제이므로
+  // SDK 재시도를 하지 않는다. 같은 요청을 다른 전송경로로 반복해 quota를 더 소모하는 것을 막는다.
   try{
     const result=await firestoreRestCommit_(writes,label);
-    resetFirestoreNetworkBestEffort_();
     return {ok:true,transport:'rest',result};
   }catch(restErr){
-    console.warn(`${label}: REST 경로 실패, SDK 경로 재시도`,restErr);
+    if(isFirestoreQuotaError_(restErr)){
+      const e=new Error(`${label}을(를) 처리할 수 없습니다. Firestore 사용량 한도(429)가 초과되었습니다. 관리자/학생 화면의 반복 요청을 중지하고 Firebase Firestore Usage에서 오늘 사용량을 확인해 주세요.`);
+      e.httpStatus=429;e.quotaExceeded=true;e.restError=restErr;throw e;
+    }
+    console.warn(`${label}: REST 경로 실패, SDK 경로를 1회만 재시도`,restErr);
     if(!sdkBatchFactory)throw restErr;
-    await resetFirestoreNetworkBestEffort_();
     try{
       const batch=sdkBatchFactory();
       await withAssessmentTimeout_(batch.commit(),`${label} SDK 재시도`,7000);
@@ -1065,7 +1073,7 @@ export async function setAssessmentStatus(assessmentId,status,assessmentSnapshot
   requireAssessmentCloud();
   const id=String(assessmentId);
   const ref=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
-  // v3.2.1: 입장/시작 직전에 SDK getDoc()을 호출하지 않는다.
+  // v3.3.0: 입장/시작 직전에 SDK getDoc()을 호출하지 않는다.
   // 이전 평가의 pending write/network queue가 SDK 읽기까지 붙잡는 상황을 완전히 우회하기 위해,
   // 관리자 화면이 이미 서버 스냅샷으로 보유한 선택 평가 객체를 그대로 사용한다.
   if(!assessmentSnapshot || String(assessmentSnapshot.id||"")!==id){
@@ -1165,7 +1173,7 @@ async function retryAssessmentLifecycle_(label, fn, attempts=4){
 }
 
 export async function setAssessmentStatusVerified(assessmentId,status,assessmentSnapshot=null){
-  // v3.2.1: 입장/시작은 화면에 이미 로드된 서버 스냅샷을 사용하고,
+  // v3.3.0: 입장/시작은 화면에 이미 로드된 서버 스냅샷을 사용하고,
   // 실제 상태 반영만 REST commit으로 수행한다. SDK 사전 읽기 큐에 의존하지 않는다.
   return setAssessmentStatus(String(assessmentId),status,assessmentSnapshot);
 }
@@ -1196,7 +1204,7 @@ export async function setAssessmentDuration(assessmentId,minutes,assessmentSnaps
   const duration=Math.max(1,Math.min(300,Number(minutes||0)));
   if(!Number.isFinite(duration)) throw new Error("시험시간을 확인해 주세요.");
   const id=String(assessmentId);
-  // v3.2.1: 시험 시작 직전 시험시간 저장도 SDK getDoc() 선행 없이 처리한다.
+  // v3.3.0: 시험 시작 직전 시험시간 저장도 SDK getDoc() 선행 없이 처리한다.
   if(!assessmentSnapshot || String(assessmentSnapshot.id||"")!==id){
     throw new Error("현재 평가 정보가 없습니다. 수행평가 목록을 다시 선택한 뒤 시도해 주세요.");
   }
@@ -1387,7 +1395,7 @@ export async function deleteAssessment(assessmentId){
   const publicPath=["publicCourses",activeProjectId,"assessments",id];
   const contentPath=["publicCourses",activeProjectId,"assessments",id,"content","main"];
 
-  // v3.2.1: 삭제도 REST commit을 우선 사용해 SDK pending-write queue와 분리한다.
+  // v3.3.0: 삭제도 REST commit을 우선 사용해 SDK pending-write queue와 분리한다.
   // 상위 문서가 실제 서버에서 삭제된 뒤에만 성공을 반환한다.
   const writes=[restDeleteWrite_(contentPath),restDeleteWrite_(publicPath),restDeleteWrite_(privatePath)];
   const sdkFactory=()=>{
