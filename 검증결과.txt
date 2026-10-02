@@ -1,9 +1,11 @@
-JCOUP 관리자 v3.1.1 정적 검증 결과
-- 관리자 버전 3.1.1: 확인
+JCOUP 관리자 v3.1.2 정적 검증 결과
+- 관리자 버전 3.1.2: 확인
 - JavaScript 문법 검사: 통과
-- 평가 종료: private/public CLOSED 서버 재확인 로직 포함
-- 평가 삭제: private/public 서버 부재 재확인 로직 포함
-- 평가 목록: pending write 성공 표시 억제
-- 중복 생성 방지: 저장 중 잠금 + 동일 조건 경고
-- 평가 ID 표시: 목록/상세 확인
-- Firestore Rules: v3.1.0과 동일
+- 평가 종료: private/public CLOSED batch.commit 서버 승인 기준
+- 평가 종료 추가 서버 재조회: 제거
+- 핵심 평가 write: 8초 응답 제한
+- 평가 목록: cache/pending snapshot 미반영, 서버 snapshot만 반영
+- 평가 삭제: 상위 private/public/content 먼저 서버 삭제, attempts/sessions 백그라운드 정리
+- 평가 ID별 독립 운영/반별 분리/목록 접기: 유지
+- Firestore Rules: 변경 없음
+- 학생 포털: v1.6.8 유지

@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.1.1";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.1.1";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.1.2";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.1.2";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -247,11 +247,11 @@ function startCloudAssessmentListener(){
     firebase.fsMod.orderBy("updatedAt", "desc")
   );
   unsubscribeAssessments = firebase.fsMod.onSnapshot(q,{includeMetadataChanges:true}, snap=>{
-    // v3.1.1: 관리자 평가 목록은 로컬 지연 보상(pending write)을 성공 상태처럼 표시하지 않는다.
-    // 서버가 쓰기를 승인한 뒤의 스냅샷을 기준으로 상태를 갱신한다.
-    if(snap.metadata?.hasPendingWrites) return;
+    // v3.1.2: 수행평가 목록은 오직 Firestore 서버 스냅샷만 화면에 반영한다.
+    // 캐시/지연보상 스냅샷이 OPEN/삭제 전 상태를 다시 그려 '원상복귀'처럼 보이는 현상을 차단한다.
+    if(snap.metadata?.hasPendingWrites || snap.metadata?.fromCache) return;
     const rows=snap.docs.map(d=>({id:d.id,...d.data(),projectId:activeProjectId}));
-    onAssessmentsCb?.(rows,snap.metadata?.fromCache?"cloud-cache":"cloud-server",activeProjectId);
+    onAssessmentsCb?.(rows,"cloud-server",activeProjectId);
   }, err=>{
     console.error("Firestore assessment snapshot error:",err);
     onAuthCb?.({configured:true,user:currentUser,mode:"cloud",error:err.message});
@@ -790,6 +790,22 @@ async function getDocsServer(refOrQuery){
   if(typeof firebase.fsMod.getDocsFromServer==="function") return firebase.fsMod.getDocsFromServer(refOrQuery);
   return firebase.fsMod.getDocs(refOrQuery);
 }
+
+const ASSESSMENT_SERVER_TIMEOUT_MS=8000;
+function withAssessmentTimeout_(promise,label,ms=ASSESSMENT_SERVER_TIMEOUT_MS){
+  let timer=null;
+  return Promise.race([
+    Promise.resolve(promise).finally(()=>{ if(timer) clearTimeout(timer); }),
+    new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(new Error(`${label} 서버 응답이 ${Math.round(ms/1000)}초를 초과했습니다. 잠시 후 서버 상태를 다시 확인해 주세요.`)),ms);
+    })
+  ]);
+}
+async function commitAssessmentBatch_(batch,label){
+  // Firestore writeBatch.commit()은 백엔드가 쓰기를 승인해야 resolve 된다.
+  // 따라서 commit 성공 뒤 동일 문서를 다시 서버 조회할 필요가 없다.
+  return withAssessmentTimeout_(batch.commit(),label);
+}
 function assessmentFingerprintData(a){
   const classes=Array.isArray(a?.targetClasses)?a.targetClasses.map(String).sort().join("|"):"";
   const qCount=Array.isArray(a?.questions)?a.questions.length:Number(a?.questionCount||0);
@@ -968,7 +984,7 @@ export async function setAssessmentStatus(assessmentId,status){
     batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id,"content","main"),{
       assessmentId:a.id,title:a.title,instructions:a.instructions,questions:a.questions,updatedAt:firebase.fsMod.serverTimestamp()
     },{merge:true});
-    await batch.commit();
+    await commitAssessmentBatch_(batch,"학생 입장 열기");
     return {...a,status:"WAITING",timeExtensionMinutes:0,startedAt:null};
   }
 
@@ -984,7 +1000,7 @@ export async function setAssessmentStatus(assessmentId,status){
     batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id,"content","main"),{
       assessmentId:a.id,title:a.title,instructions:a.instructions,questions:a.questions,updatedAt:firebase.fsMod.serverTimestamp()
     },{merge:true});
-    await batch.commit();
+    await commitAssessmentBatch_(batch,"시험 시작");
     return {...a,status:"OPEN",timeExtensionMinutes:0};
   }
 
@@ -1004,7 +1020,7 @@ export async function closeAssessmentStatusOnly(assessmentId,reason="AUTO_CLOSE"
   const batch=firebase.fsMod.writeBatch(db);
   batch.set(privateRef,{status:"CLOSED",closeReason:String(reason||"AUTO_CLOSE"),closedAt:firebase.fsMod.serverTimestamp(),updatedAt:new Date().toISOString()},{merge:true});
   batch.set(publicRef,{status:"CLOSED",closeReason:String(reason||"AUTO_CLOSE"),closedAt:firebase.fsMod.serverTimestamp(),updatedAt:firebase.fsMod.serverTimestamp()},{merge:true});
-  await batch.commit();
+  await commitAssessmentBatch_(batch,"평가 상태 종료");
   return true;
 }
 
@@ -1020,44 +1036,25 @@ async function retryAssessmentLifecycle_(label, fn, attempts=4){
 }
 
 export async function setAssessmentStatusVerified(assessmentId,status){
-  const id=String(assessmentId);
-  return retryAssessmentLifecycle_(`평가 상태 ${status}`,async()=>{
-    const result=await setAssessmentStatus(id,status);
-    const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
-    const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
-    const [pri,pub]=await Promise.all([firebase.fsMod.getDoc(privateRef),firebase.fsMod.getDoc(publicRef)]);
-    const ps=String(pri.data()?.status||""), qs=String(pub.data()?.status||"");
-    if(ps!==String(status)||qs!==String(status))throw new Error(`상태 확인 불일치 (관리자:${ps||"없음"}, 학생:${qs||"없음"})`);
-    return result;
-  },4);
+  // v3.1.2: 상태 변경 batch.commit 자체가 서버 승인 완료를 의미한다.
+  // 승인 후 추가 서버 재조회로 다시 기다리지 않는다.
+  return setAssessmentStatus(String(assessmentId),status);
 }
 
 export async function closeAssessmentImmediate(assessmentId,reason="TEACHER_CLOSE"){
   requireAssessmentCloud();
   const id=String(assessmentId);
-  return retryAssessmentLifecycle_("평가 즉시 종료",async()=>{
-    const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
-    const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
-    const pri=await getDocServer(privateRef);
-    if(!pri.exists())throw new Error("수행평가를 찾을 수 없습니다.");
-    const before={id:pri.id,...pri.data()};
-    const batch=firebase.fsMod.writeBatch(db);
-    const common={status:"CLOSED",closeReason:String(reason||"TEACHER_CLOSE"),closedAt:firebase.fsMod.serverTimestamp()};
-    batch.set(privateRef,{...common,updatedAt:new Date().toISOString()},{merge:true});
-    batch.set(publicRef,{...common,updatedAt:firebase.fsMod.serverTimestamp()},{merge:true});
-    await batch.commit();
+  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
+  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
+  const batch=firebase.fsMod.writeBatch(db);
+  const common={status:"CLOSED",closeReason:String(reason||"TEACHER_CLOSE"),closedAt:firebase.fsMod.serverTimestamp()};
+  batch.set(privateRef,{...common,updatedAt:new Date().toISOString()},{merge:true});
+  batch.set(publicRef,{...common,updatedAt:firebase.fsMod.serverTimestamp()},{merge:true});
 
-    // v3.1.1: 캐시가 아니라 Firestore 서버에서 CLOSED가 실제 저장됐는지 확인한다.
-    const [p1,p2]=await Promise.all([getDocServer(privateRef),getDocServer(publicRef)]);
-    if(!p1.exists()||String(p1.data()?.status)!=="CLOSED") throw new Error("관리자 원본의 종료 상태가 서버에 확정되지 않았습니다.");
-    if(!p2.exists()||String(p2.data()?.status)!=="CLOSED") throw new Error("학생 공개본의 종료 상태가 서버에 확정되지 않았습니다.");
-
-    // 동일 제목/반/시간/문항수의 별도 평가 ID가 OPEN이면 '원상복귀'처럼 보일 수 있으므로 알려 준다.
-    const all=await getDocsServer(firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments"));
-    const fp=assessmentFingerprintData(before);
-    const sameFingerprintOpen=all.docs.filter(d=>d.id!==id&&String(d.data()?.status)==="OPEN"&&assessmentFingerprintData(d.data())===fp).length;
-    return {ok:true,id,title:String(before.title||""),sameFingerprintOpen};
-  },4);
+  // v3.1.2 핵심: commit 성공 = Firestore 백엔드가 private/public CLOSED를 모두 승인한 상태.
+  // v3.1.1의 getDocFromServer/getDocsFromServer 재확인이 무기한 대기하는 문제를 제거한다.
+  await commitAssessmentBatch_(batch,"평가 종료");
+  return {ok:true,id};
 }
 
 export async function setAssessmentDuration(assessmentId,minutes){
@@ -1217,39 +1214,44 @@ export async function getAssessmentRecoverySnapshots(assessmentId){
   return snap.docs.map(d=>({id:d.id,...d.data()}));
 }
 
+async function cleanupAssessmentChildrenBestEffort_(assessmentId){
+  const id=String(assessmentId);
+  const base=["publicCourses",activeProjectId,"assessments",id];
+  try{
+    const [attempts,sessions]=await Promise.all([
+      firebase.fsMod.getDocs(firebase.fsMod.collection(db,...base,"attempts")),
+      firebase.fsMod.getDocs(firebase.fsMod.collection(db,...base,"sessions"))
+    ]);
+    const children=[...attempts.docs,...sessions.docs];
+    for(let i=0;i<children.length;i+=400){
+      const childBatch=firebase.fsMod.writeBatch(db);
+      children.slice(i,i+400).forEach(d=>childBatch.delete(d.ref));
+      await commitAssessmentBatch_(childBatch,"평가 하위 기록 정리");
+    }
+  }catch(err){
+    // 상위 평가 문서가 이미 삭제되었으므로 하위 정리 실패가 평가 목록/학생 입장을 되살리지는 않는다.
+    console.warn("평가 하위 기록 백그라운드 정리 실패",id,err);
+  }
+}
+
 export async function deleteAssessment(assessmentId){
   requireAssessmentCloud();
   const id=String(assessmentId);
   const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
   const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
-  const before=await getDocServer(privateRef);
-  if(!before.exists()) throw new Error("삭제할 수행평가를 서버에서 찾을 수 없습니다.");
-  const beforeData={id:before.id,...before.data()};
-  const base=["publicCourses",activeProjectId,"assessments",id];
-  const [attempts,sessions]=await Promise.all([
-    getDocsServer(firebase.fsMod.collection(db,...base,"attempts")),
-    getDocsServer(firebase.fsMod.collection(db,...base,"sessions"))
-  ]);
-  const children=[...attempts.docs,...sessions.docs];
-  for(let i=0;i<children.length;i+=400){
-    const childBatch=firebase.fsMod.writeBatch(db);
-    children.slice(i,i+400).forEach(d=>childBatch.delete(d.ref));
-    await childBatch.commit();
-  }
+  const contentRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id,"content","main");
+
+  // v3.1.2: 목록/학생 입장에 영향을 주는 상위 문서를 먼저 하나의 batch로 서버에서 삭제 확정한다.
+  // commit이 resolve 되면 서버 삭제가 확정된 것이므로 추가 getDocFromServer 검증으로 다시 기다리지 않는다.
   const batch=firebase.fsMod.writeBatch(db);
   batch.delete(privateRef);
-  batch.delete(firebase.fsMod.doc(db,...base,"content","main"));
+  batch.delete(contentRef);
   batch.delete(publicRef);
-  await batch.commit();
+  await commitAssessmentBatch_(batch,"평가 삭제");
 
-  // v3.1.1: '화면에서만 사라졌다가 새로고침하면 복귀'하지 않도록 서버 부재를 직접 확인한다.
-  const [privateAfter,publicAfter]=await Promise.all([getDocServer(privateRef),getDocServer(publicRef)]);
-  if(privateAfter.exists()||publicAfter.exists()) throw new Error("삭제 요청은 처리됐지만 서버에서 평가 문서가 아직 남아 있습니다. 다시 시도해 주세요.");
-
-  const all=await getDocsServer(firebase.fsMod.collection(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments"));
-  const fp=assessmentFingerprintData(beforeData);
-  const sameFingerprintRemaining=all.docs.filter(d=>assessmentFingerprintData(d.data())===fp).length;
-  return {attempts:attempts.size,sessions:sessions.size,id,title:String(beforeData.title||""),sameFingerprintRemaining};
+  // attempts/sessions는 평가 ID 하위의 고립 데이터이므로 평가 삭제 성공을 막지 않고 뒤에서 정리한다.
+  cleanupAssessmentChildrenBestEffort_(id);
+  return {id,serverDeleted:true};
 }
 
 export function watchAssessmentAttempts(assessmentId,callback){
