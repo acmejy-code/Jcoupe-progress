@@ -1,11 +1,16 @@
-JCOUP 관리자 v3.1.2 정적 검증 결과
-- 관리자 버전 3.1.2: 확인
-- JavaScript 문법 검사: 통과
-- 평가 종료: private/public CLOSED batch.commit 서버 승인 기준
-- 평가 종료 추가 서버 재조회: 제거
-- 핵심 평가 write: 8초 응답 제한
-- 평가 목록: cache/pending snapshot 미반영, 서버 snapshot만 반영
-- 평가 삭제: 상위 private/public/content 먼저 서버 삭제, attempts/sessions 백그라운드 정리
-- 평가 ID별 독립 운영/반별 분리/목록 접기: 유지
-- Firestore Rules: 변경 없음
-- 학생 포털: v1.6.8 유지
+JCOUP 관리자 v3.2.1 검증 결과
+
+핵심 수정
+- 학생 입장 열기(WAITING): SDK getDoc 선행 제거, 화면에 이미 로드된 서버 스냅샷 + REST commit 사용
+- 시험시간 저장: SDK getDoc 선행 제거, 선택 평가 상태 + REST commit 사용
+- 시험 시작(OPEN): SDK getDoc 선행 제거, REST commit 사용
+- 평가 종료(CLOSED): 기존 v3.2 REST commit 유지
+- 평가 삭제: 기존 v3.2 REST commit 유지
+- 평가 목록: 서버 스냅샷만 화면 반영 유지
+- 반/평가 ID별 독립 운영 유지
+- 학생 포털 v1.6.8 호환, Firestore Rules 변경 없음
+
+정적 검증
+- app.js 문법 검사 통과
+- db.js 문법 검사 통과
+- project-data.js 문법 검사 통과

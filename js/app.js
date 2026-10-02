@@ -1,4 +1,4 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.1.2";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.2.1";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -10,14 +10,14 @@ import {
   watchAssessmentAttempts, resetAssessmentRun, setAssessmentDuration, extendAssessmentTime, extendAssessmentStudentTime,
   reopenAssessmentAttempt, finalizeExpiredAssessmentAttempts, finalizeAllAssessmentAttempts, getAssessmentServerTimeMs,
   closeAssessmentStatusOnly, closeAssessmentImmediate, setAssessmentStatusVerified, getAssessmentRecoverySnapshots
-} from "./db.js?v=3.1.2";
+} from "./db.js?v=3.2.1";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const pad=n=>String(n).padStart(2,"0");
 const toYmd=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const parseLocalDate=s=>new Date(`${s}T12:00:00`);
-const ASSESSMENT_FINALIZE_GRACE_MS=15000; // v3.1.2: 미제출자가 있을 때만 0초 후 15초 통신 유예
+const ASSESSMENT_FINALIZE_GRACE_MS=15000; // v3.2.1: 미제출자가 있을 때만 0초 후 15초 통신 유예
 
 function assessmentTargetStudentIds(a){
   const target=(a?.targetClasses?.length?a.targetClasses:projectClasses()).map(String);
@@ -900,6 +900,15 @@ function statusInfo(studentId){
 }
 
 function assessmentStatusLabel(v){return v==="WAITING"?"입장 대기":v==="OPEN"?"응시 중":v==="CLOSED"?"종료":"준비";}
+function patchAssessmentLocal(id,patch){
+  const key=String(id||"");
+  assessments=assessments.map(a=>String(a.id)===key?{...a,...patch}:a);
+}
+function removeAssessmentLocal(id){
+  const key=String(id||"");
+  assessments=assessments.filter(a=>String(a.id)!==key);
+  if(String(selectedAssessmentId||"")===key)selectedAssessmentId=assessments[0]?.id||null;
+}
 function assessmentClientFingerprint(a){
   const classes=(Array.isArray(a?.targetClasses)?a.targetClasses:[]).map(String).sort().join("|");
   const qCount=Array.isArray(a?.questions)?a.questions.length:Number(a?.questionCount||0);
@@ -932,7 +941,7 @@ async function saveAssessmentForm(e){
   const questions=[...document.querySelectorAll(".question-edit-row")].map((row,i)=>({id:`q${i+1}`,prompt:row.querySelector(".question-prompt").value.trim(),placeholder:row.querySelector(".question-placeholder").value.trim(),required:true})).filter(q=>q.prompt);
   const targetClasses=[...$("assessmentClassChecks").querySelectorAll("input:checked")].map(x=>x.value);
   const old=editingAssessmentId?assessments.find(x=>x.id===editingAssessmentId):null;
-  const targetId=editingAssessmentId||makeId(); // v3.1.2: 저장 시작 시 ID를 한 번만 생성해 연속 클릭 중복 생성을 막음
+  const targetId=editingAssessmentId||makeId(); // v3.2.1: 저장 시작 시 ID를 한 번만 생성해 연속 클릭 중복 생성을 막음
   const draft={...(old||{}),id:targetId,title:$("assessmentTitle").value,description:$("assessmentDescription").value,instructions:$("assessmentInstructions").value,accessCode:$("assessmentAccessCode").value,targetClasses,durationMinutes:Number($("assessmentDuration").value||0),questions,status:old?.status||"DRAFT"};
   if(!editingAssessmentId){
     const fp=assessmentClientFingerprint(draft);
@@ -1473,7 +1482,7 @@ async function runExpiredFinalize(){
   await syncAssessmentServerClock().catch(()=>{});
   const now=assessmentNowMs()||Date.now();
 
-  // v3.1.2: 평가별 독립 실행. 한 평가의 네트워크 지연/강제확정 실패가
+  // v3.2.1: 평가별 독립 실행. 한 평가의 네트워크 지연/강제확정 실패가
   // 다른 반 평가의 입장·시작·종료를 기다리게 하지 않는다.
   await Promise.allSettled(open.map(a=>finalizeOneAssessmentLifecycle(a,now)));
 }
@@ -1501,8 +1510,10 @@ function renderAssessments(){
       if(!confirm("학생 입장을 열까요?\n\n학생들은 학번·이름·응시코드로 인증한 뒤 대기실에서 기다리며, 아직 문항은 볼 수 없습니다."))return;
       waitingBtn.disabled=true;waitingBtn.textContent="입장 여는 중…";
       try{
-        await setAssessmentStatusVerified(selected.id,"WAITING");
-        toast("학생 대기실을 열었습니다. 관리자·학생 상태 확인 완료");
+        const opened=await setAssessmentStatusVerified(selected.id,"WAITING",selected);
+        patchAssessmentLocal(selected.id,{status:"WAITING",timeExtensionMinutes:0,startedAt:null});
+        renderAssessments();startAttemptWatch();
+        toast(`학생 대기실을 열었습니다.${opened?._transport==="rest"?" (서버 직접 반영)":""}`);
       }catch(err){
         alert(`학생 입장을 열지 못했습니다.\n${err.message||err}\n\n새로고침 후 다시 시도해 주세요.`);
       }finally{if(waitingBtn.isConnected){waitingBtn.disabled=false;waitingBtn.textContent="학생 입장 열기";}}
@@ -1512,9 +1523,11 @@ function renderAssessments(){
       if(!confirm(`시험을 지금 시작할까요?\n\n문항이 학생들에게 동시에 공개되고 ${minutes}분의 공통 시험시간이 지금부터 시작됩니다.`))return;
       startBtn.disabled=true;startBtn.textContent="시험 시작 중…";
       try{
-        await setAssessmentDuration(selected.id,minutes);
-        await setAssessmentStatusVerified(selected.id,"OPEN");
-        toast(`${minutes}분 시험을 시작했습니다. 학생 공개 상태 확인 완료`);
+        await setAssessmentDuration(selected.id,minutes,selected);
+        const opened=await setAssessmentStatusVerified(selected.id,"OPEN",{...selected,durationMinutes:minutes});
+        patchAssessmentLocal(selected.id,{status:"OPEN",durationMinutes:minutes,timeExtensionMinutes:0,startedAt:opened?.startedAt||new Date()});
+        renderAssessments();startAttemptWatch();
+        toast(`${minutes}분 시험을 시작했습니다.${opened?._transport==="rest"?" (서버 직접 반영)":""}`);
       }catch(err){
         alert(`시험 시작 처리에 실패했습니다.\n${err.message||err}`);
       }finally{if(startBtn.isConnected){startBtn.disabled=false;startBtn.textContent="시험 시작";}}
@@ -1523,9 +1536,11 @@ function renderAssessments(){
       if(!confirm("평가를 지금 종료할까요?\n\n평가 상태는 즉시 종료되어 학생 목록에서 닫히며, 아직 제출하지 않은 답안은 서버의 마지막 저장본을 기준으로 백그라운드 확정합니다. 기존 답안은 삭제되지 않습니다."))return;
       closeBtn.disabled=true;closeBtn.textContent="즉시 종료 중…";
       try{
-        // v3.1.2 핵심: Firestore batch.commit 서버 승인까지만 기다리고 CLOSED 처리한다.
-        // 추가 서버 재조회는 하지 않으며, 8초 이상 응답이 없으면 버튼을 즉시 복구해 무한 대기를 막는다.
+        // v3.2.1: 평가 종료는 Firestore REST commit을 우선 사용해 SDK pending-write queue와 분리한다.
+        // REST 실패 시에만 SDK 연결을 초기화하고 한 번 재시도한다.
         const closed=await closeAssessmentImmediate(selected.id,"TEACHER_CLOSE_IMMEDIATE");
+        patchAssessmentLocal(selected.id,{status:"CLOSED",closeReason:"TEACHER_CLOSE_IMMEDIATE",closedAt:new Date()});
+        renderAssessments();startAttemptWatch();
         if(closed?.sameFingerprintOpen>0){
           alert(`선택한 평가 ${assessmentShortId(selected)}는 서버에서 종료 확정되었습니다.\n\n다만 제목·반·시험시간·문항 수가 같은 다른 평가가 ${closed.sameFingerprintOpen}개 아직 '응시 중'입니다. 목록의 평가 ID를 확인해 각각 종료해 주세요.`);
         }else{
@@ -1544,7 +1559,7 @@ function renderAssessments(){
     const cancelWaitingBtn=$("cancelWaitingAssessmentBtn");if(cancelWaitingBtn)cancelWaitingBtn.onclick=async()=>{
       if(!confirm("이 평가의 학생 대기실을 닫고 평가를 종료 상태로 바꿀까요?\n대기실 인증 기록과 평가 데이터는 삭제되지 않습니다."))return;
       cancelWaitingBtn.disabled=true;
-      try{await closeAssessmentImmediate(selected.id,"WAITING_CANCELLED");toast("대기실을 닫았습니다.");}
+      try{const closed=await closeAssessmentImmediate(selected.id,"WAITING_CANCELLED");patchAssessmentLocal(selected.id,{status:"CLOSED",closeReason:"WAITING_CANCELLED",closedAt:new Date()});renderAssessments();startAttemptWatch();toast(`대기실을 닫았습니다.${closed?.transport==="rest"?" (서버 직접 반영)":""}`);}
       catch(err){alert(`대기실 종료에 실패했습니다.\n${err.message||err}`);}
       finally{if(cancelWaitingBtn.isConnected)cancelWaitingBtn.disabled=false;}
     };
@@ -1558,7 +1573,7 @@ function renderAssessments(){
       if(!confirm("정말 삭제합니다. 이 작업은 되돌릴 수 없습니다."))return;
       try{
         const r=await deleteAssessment(selected.id);
-        selectedAssessmentId=null;assessmentAttempts=[];
+        removeAssessmentLocal(selected.id);assessmentAttempts=[];renderAssessments();startAttemptWatch();
         if(r?.sameFingerprintRemaining>0){
           alert(`선택한 평가 ${assessmentShortId(selected)}는 Firestore 서버에서 삭제 확인되었습니다.\n\n다만 제목·반·시험시간·문항 수가 같은 별도 평가 ID가 ${r.sameFingerprintRemaining}개 남아 있습니다.\n목록에 같은 제목이 다시 보여도 삭제한 평가가 부활한 것이 아니라 다른 평가입니다.`);
         }else{
@@ -1643,7 +1658,7 @@ function bind(){
   $("closeProjectDialog").onclick=()=>$("projectDialog").close();$("cancelProjectBtn").onclick=()=>$("projectDialog").close();$("projectForm").onsubmit=saveProjectForm;
   $("closeMaterialDialog").onclick=()=>$("materialDialog").close();$("cancelMaterialBtn").onclick=()=>$("materialDialog").close();$("materialForm").onsubmit=saveMaterialForm;$("deleteMaterialBtn").onclick=deleteEditingMaterial;
   $("closeNoticeDialog").onclick=()=>$("noticeDialog").close();$("cancelNoticeBtn").onclick=()=>$("noticeDialog").close();$("noticeForm").onsubmit=saveNoticeForm;$("addNoticeDriveBtn").onclick=addNoticeDriveAttachment;$("deleteNoticeBtn").onclick=deleteEditingNotice;
-  $("closeAssessmentDialog").onclick=()=>$("assessmentDialog").close();$("cancelAssessmentBtn").onclick=()=>$("assessmentDialog").close();$("assessmentForm").onsubmit=saveAssessmentForm;$("addQuestionBtn").onclick=()=>addQuestionEditor({});$("generateAccessCodeBtn").onclick=()=>$("assessmentAccessCode").value=generateAccessCode();$("deleteAssessmentBtn").onclick=async()=>{if(!editingAssessmentId)return;const target=assessments.find(x=>x.id===editingAssessmentId);if(target?.status==="OPEN"){alert("현재 응시 중인 평가는 평가 종료 후 삭제해 주세요.");return;}if(confirm("이 수행평가를 완전히 삭제할까요?\n응시 기록과 인증 세션도 함께 삭제되며 복구할 수 없습니다.")){try{const r=await deleteAssessment(editingAssessmentId);$("assessmentDialog").close();selectedAssessmentId=null;assessmentAttempts=[];if(r?.sameFingerprintRemaining>0)alert(`선택한 평가는 서버에서 삭제되었습니다. 다만 동일 조건의 별도 평가 ID가 ${r.sameFingerprintRemaining}개 남아 있습니다.`);else toast("수행평가를 서버에서 삭제 확인했습니다.");}catch(err){alert(err.message);}}};
+  $("closeAssessmentDialog").onclick=()=>$("assessmentDialog").close();$("cancelAssessmentBtn").onclick=()=>$("assessmentDialog").close();$("assessmentForm").onsubmit=saveAssessmentForm;$("addQuestionBtn").onclick=()=>addQuestionEditor({});$("generateAccessCodeBtn").onclick=()=>$("assessmentAccessCode").value=generateAccessCode();$("deleteAssessmentBtn").onclick=async()=>{if(!editingAssessmentId)return;const target=assessments.find(x=>x.id===editingAssessmentId);if(target?.status==="OPEN"){alert("현재 응시 중인 평가는 평가 종료 후 삭제해 주세요.");return;}if(confirm("이 수행평가를 완전히 삭제할까요?\n응시 기록과 인증 세션도 함께 삭제되며 복구할 수 없습니다.")){try{const deletingId=editingAssessmentId;const r=await deleteAssessment(deletingId);$("assessmentDialog").close();removeAssessmentLocal(deletingId);assessmentAttempts=[];renderAssessments();startAttemptWatch();if(r?.sameFingerprintRemaining>0)alert(`선택한 평가는 서버에서 삭제되었습니다. 다만 동일 조건의 별도 평가 ID가 ${r.sameFingerprintRemaining}개 남아 있습니다.`);else toast("수행평가를 서버에서 삭제 확인했습니다.");}catch(err){alert(err.message);}}};
   $("closeMonitorStudentDialog").onclick=()=>$("monitorStudentDialog").close();
   const addStudentMinutes=async minutes=>{if(!monitorControlStudentId)return;const n=Math.max(1,Math.min(120,Math.floor(Number(minutes||0))));if(!Number.isFinite(n))return;await extendAssessmentStudentTime(selectedAssessmentId,monitorControlStudentId,n);toast(`해당 학생에게 ${n}분을 추가했습니다.`);$("monitorStudentDialog").close();};
   $("monitorAdd1Btn").onclick=()=>addStudentMinutes(1);

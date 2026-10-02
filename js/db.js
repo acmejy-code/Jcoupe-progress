@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.1.2";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.1.2";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.2.1";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.2.1";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -247,7 +247,7 @@ function startCloudAssessmentListener(){
     firebase.fsMod.orderBy("updatedAt", "desc")
   );
   unsubscribeAssessments = firebase.fsMod.onSnapshot(q,{includeMetadataChanges:true}, snap=>{
-    // v3.1.2: 수행평가 목록은 오직 Firestore 서버 스냅샷만 화면에 반영한다.
+    // v3.2.1: 수행평가 목록은 오직 Firestore 서버 스냅샷만 화면에 반영한다.
     // 캐시/지연보상 스냅샷이 OPEN/삭제 전 상태를 다시 그려 '원상복귀'처럼 보이는 현상을 차단한다.
     if(snap.metadata?.hasPendingWrites || snap.metadata?.fromCache) return;
     const rows=snap.docs.map(d=>({id:d.id,...d.data(),projectId:activeProjectId}));
@@ -792,19 +792,117 @@ async function getDocsServer(refOrQuery){
 }
 
 const ASSESSMENT_SERVER_TIMEOUT_MS=8000;
+const ASSESSMENT_REST_TIMEOUT_MS=7000;
 function withAssessmentTimeout_(promise,label,ms=ASSESSMENT_SERVER_TIMEOUT_MS){
   let timer=null;
   return Promise.race([
     Promise.resolve(promise).finally(()=>{ if(timer) clearTimeout(timer); }),
     new Promise((_,reject)=>{
-      timer=setTimeout(()=>reject(new Error(`${label} 서버 응답이 ${Math.round(ms/1000)}초를 초과했습니다. 잠시 후 서버 상태를 다시 확인해 주세요.`)),ms);
+      timer=setTimeout(()=>reject(new Error(`${label} 서버 응답이 ${Math.round(ms/1000)}초를 초과했습니다.`)),ms);
     })
   ]);
 }
 async function commitAssessmentBatch_(batch,label){
-  // Firestore writeBatch.commit()은 백엔드가 쓰기를 승인해야 resolve 된다.
-  // 따라서 commit 성공 뒤 동일 문서를 다시 서버 조회할 필요가 없다.
   return withAssessmentTimeout_(batch.commit(),label);
+}
+
+function restDocName_(segments){
+  const path=segments.map(x=>encodeURIComponent(String(x))).join('/');
+  return `projects/${firebaseConfig.projectId}/databases/(default)/documents/${path}`;
+}
+function restValue_(value){
+  if(value===null||value===undefined)return {nullValue:null};
+  if(value instanceof Date)return {timestampValue:value.toISOString()};
+  if(Array.isArray(value))return {arrayValue:{values:value.map(restValue_)}};
+  if(typeof value==='boolean')return {booleanValue:value};
+  if(typeof value==='number'){
+    if(Number.isInteger(value))return {integerValue:String(value)};
+    return {doubleValue:value};
+  }
+  if(typeof value==='object'){
+    const fields={};
+    Object.entries(value).forEach(([k,v])=>{fields[k]=restValue_(v);});
+    return {mapValue:{fields}};
+  }
+  return {stringValue:String(value)};
+}
+function restFields_(obj){
+  const fields={};
+  Object.entries(obj||{}).forEach(([k,v])=>{fields[k]=restValue_(v);});
+  return fields;
+}
+function restUpdateWrite_(segments,data,{mustExist=false}={}){
+  const fieldPaths=Object.keys(data||{});
+  const write={
+    update:{name:restDocName_(segments),fields:restFields_(data)},
+    updateMask:{fieldPaths}
+  };
+  if(mustExist)write.currentDocument={exists:true};
+  return write;
+}
+function restDeleteWrite_(segments){return {delete:restDocName_(segments)};}
+
+async function firebaseIdToken_(forceRefresh=false){
+  if(!currentUser)throw new Error('Google 로그인 정보가 없습니다.');
+  if(firebase?.authMod?.getIdToken)return withAssessmentTimeout_(firebase.authMod.getIdToken(currentUser,forceRefresh),'인증 토큰',4000);
+  if(typeof currentUser.getIdToken==='function')return withAssessmentTimeout_(currentUser.getIdToken(forceRefresh),'인증 토큰',4000);
+  throw new Error('Firebase 인증 토큰을 가져올 수 없습니다.');
+}
+async function firestoreRestCommitOnce_(writes,label,token){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),ASSESSMENT_REST_TIMEOUT_MS);
+  try{
+    const url=`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(firebaseConfig.projectId)}/databases/(default)/documents:commit`;
+    const res=await fetch(url,{method:'POST',headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({writes}),signal:controller.signal,cache:'no-store'});
+    const text=await res.text();
+    let data=null;try{data=text?JSON.parse(text):null;}catch{data=null;}
+    if(!res.ok){
+      const msg=data?.error?.message||text||`HTTP ${res.status}`;
+      const err=new Error(`${label} REST 처리 실패 (${res.status}): ${msg}`);err.httpStatus=res.status;throw err;
+    }
+    return data||{ok:true};
+  }catch(err){
+    if(err?.name==='AbortError')throw new Error(`${label} REST 서버 응답이 ${Math.round(ASSESSMENT_REST_TIMEOUT_MS/1000)}초를 초과했습니다.`);
+    throw err;
+  }finally{clearTimeout(timer);}
+}
+async function firestoreRestCommit_(writes,label){
+  let token=await firebaseIdToken_(false);
+  try{return await firestoreRestCommitOnce_(writes,label,token);}catch(err){
+    if(Number(err?.httpStatus)!==401)throw err;
+    token=await firebaseIdToken_(true);
+    return firestoreRestCommitOnce_(writes,label,token);
+  }
+}
+async function resetFirestoreNetworkBestEffort_(){
+  try{
+    if(firebase?.fsMod?.disableNetwork&&firebase?.fsMod?.enableNetwork&&db){
+      await withAssessmentTimeout_(firebase.fsMod.disableNetwork(db),'Firestore 연결 초기화',1500).catch(()=>{});
+      await new Promise(r=>setTimeout(r,120));
+      await withAssessmentTimeout_(firebase.fsMod.enableNetwork(db),'Firestore 재연결',2000).catch(()=>{});
+    }
+  }catch(err){console.warn('Firestore 연결 복구 실패',err);}
+}
+async function commitAssessmentLifecycle_(writes,label,sdkBatchFactory=null){
+  // v3.2.1: 평가 생명주기(입장/시작/종료/삭제)는 REST commit을 우선 사용한다.
+  // Firestore JS SDK의 로컬 write queue가 이전 지연 쓰기에 막혀도 새 평가가 간섭받지 않게 한다.
+  try{
+    const result=await firestoreRestCommit_(writes,label);
+    resetFirestoreNetworkBestEffort_();
+    return {ok:true,transport:'rest',result};
+  }catch(restErr){
+    console.warn(`${label}: REST 경로 실패, SDK 경로 재시도`,restErr);
+    if(!sdkBatchFactory)throw restErr;
+    await resetFirestoreNetworkBestEffort_();
+    try{
+      const batch=sdkBatchFactory();
+      await withAssessmentTimeout_(batch.commit(),`${label} SDK 재시도`,7000);
+      return {ok:true,transport:'sdk-retry'};
+    }catch(sdkErr){
+      const e=new Error(`${label} 서버 반영에 실패했습니다. REST: ${restErr.message||restErr} / SDK: ${sdkErr.message||sdkErr}`);
+      e.restError=restErr;e.sdkError=sdkErr;throw e;
+    }
+  }
 }
 function assessmentFingerprintData(a){
   const classes=Array.isArray(a?.targetClasses)?a.targetClasses.map(String).sort().join("|"):"";
@@ -963,65 +1061,96 @@ export async function upsertAssessment(assessment){
   return a;
 }
 
-export async function setAssessmentStatus(assessmentId,status){
+export async function setAssessmentStatus(assessmentId,status,assessmentSnapshot=null){
   requireAssessmentCloud();
-  const ref=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId));
-  const snap=await firebase.fsMod.getDoc(ref);
-  if(!snap.exists()) throw new Error("수행평가를 찾을 수 없습니다.");
-  const before={id:snap.id,...snap.data()};
-  const a=normalizeAssessment({...before,status});
-  await ensurePublicCourseShell();
+  const id=String(assessmentId);
+  const ref=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
+  // v3.2.1: 입장/시작 직전에 SDK getDoc()을 호출하지 않는다.
+  // 이전 평가의 pending write/network queue가 SDK 읽기까지 붙잡는 상황을 완전히 우회하기 위해,
+  // 관리자 화면이 이미 서버 스냅샷으로 보유한 선택 평가 객체를 그대로 사용한다.
+  if(!assessmentSnapshot || String(assessmentSnapshot.id||"")!==id){
+    throw new Error("현재 평가 정보가 없습니다. 수행평가 목록을 다시 선택한 뒤 시도해 주세요.");
+  }
+  const a=normalizeAssessment({...assessmentSnapshot,status});
+  const now=new Date();
+  const nowIso=now.toISOString();
+  const privatePath=["users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id];
+  const publicPath=["publicCourses",activeProjectId,"assessments",id];
+  const contentPath=["publicCourses",activeProjectId,"assessments",id,"content","main"];
 
   if(status==="WAITING"){
-    const privatePayload={...a,status:"WAITING",timeExtensionMinutes:0,startedAt:null,updatedAt:new Date().toISOString()};
-    const batch=firebase.fsMod.writeBatch(db);
-    batch.set(ref,privatePayload,{merge:true});
-    batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id),{
+    const privatePayload={...a,status:"WAITING",timeExtensionMinutes:0,startedAt:null,updatedAt:nowIso};
+    const publicPayload={
       ownerUid:currentUser.uid,assessmentId:a.id,title:a.title,description:a.description,status:"WAITING",
       targetClasses:a.targetClasses,durationMinutes:a.durationMinutes,timeExtensionMinutes:0,
-      startedAt:null,questionCount:a.questions.length,updatedAt:firebase.fsMod.serverTimestamp()
-    },{merge:true});
-    batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id,"content","main"),{
-      assessmentId:a.id,title:a.title,instructions:a.instructions,questions:a.questions,updatedAt:firebase.fsMod.serverTimestamp()
-    },{merge:true});
-    await commitAssessmentBatch_(batch,"학생 입장 열기");
-    return {...a,status:"WAITING",timeExtensionMinutes:0,startedAt:null};
+      startedAt:null,questionCount:a.questions.length,updatedAt:now
+    };
+    const contentPayload={assessmentId:a.id,title:a.title,instructions:a.instructions,questions:a.questions,updatedAt:now};
+    const writes=[
+      restUpdateWrite_(privatePath,privatePayload,{mustExist:true}),
+      restUpdateWrite_(publicPath,publicPayload),
+      restUpdateWrite_(contentPath,contentPayload)
+    ];
+    const sdkFactory=()=>{
+      const batch=firebase.fsMod.writeBatch(db);
+      batch.set(ref,{...privatePayload},{merge:true});
+      batch.set(firebase.fsMod.doc(db,...publicPath),{...publicPayload,updatedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+      batch.set(firebase.fsMod.doc(db,...contentPath),{...contentPayload,updatedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+      return batch;
+    };
+    const r=await commitAssessmentLifecycle_(writes,"학생 입장 열기",sdkFactory);
+    return {...a,status:"WAITING",timeExtensionMinutes:0,startedAt:null,_transport:r.transport};
   }
 
   if(status==="OPEN"){
-    const privatePayload={...a,status:"OPEN",timeExtensionMinutes:0,startedAt:firebase.fsMod.serverTimestamp(),updatedAt:new Date().toISOString()};
-    const batch=firebase.fsMod.writeBatch(db);
-    batch.set(ref,privatePayload,{merge:true});
-    batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id),{
+    const privatePayload={...a,status:"OPEN",timeExtensionMinutes:0,startedAt:now,updatedAt:nowIso};
+    const publicPayload={
       ownerUid:currentUser.uid,assessmentId:a.id,title:a.title,description:a.description,status:"OPEN",
       targetClasses:a.targetClasses,durationMinutes:a.durationMinutes,timeExtensionMinutes:0,
-      startedAt:firebase.fsMod.serverTimestamp(),questionCount:a.questions.length,updatedAt:firebase.fsMod.serverTimestamp()
-    },{merge:true});
-    batch.set(firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",a.id,"content","main"),{
-      assessmentId:a.id,title:a.title,instructions:a.instructions,questions:a.questions,updatedAt:firebase.fsMod.serverTimestamp()
-    },{merge:true});
-    await commitAssessmentBatch_(batch,"시험 시작");
-    return {...a,status:"OPEN",timeExtensionMinutes:0};
+      startedAt:now,questionCount:a.questions.length,updatedAt:now
+    };
+    const contentPayload={assessmentId:a.id,title:a.title,instructions:a.instructions,questions:a.questions,updatedAt:now};
+    const writes=[
+      restUpdateWrite_(privatePath,privatePayload,{mustExist:true}),
+      restUpdateWrite_(publicPath,publicPayload),
+      restUpdateWrite_(contentPath,contentPayload)
+    ];
+    const sdkFactory=()=>{
+      const batch=firebase.fsMod.writeBatch(db);
+      batch.set(ref,{...privatePayload,startedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+      batch.set(firebase.fsMod.doc(db,...publicPath),{...publicPayload,startedAt:firebase.fsMod.Timestamp.fromDate(now),updatedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+      batch.set(firebase.fsMod.doc(db,...contentPath),{...contentPayload,updatedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+      return batch;
+    };
+    const r=await commitAssessmentLifecycle_(writes,"시험 시작",sdkFactory);
+    return {...a,status:"OPEN",timeExtensionMinutes:0,startedAt:now,_transport:r.transport};
   }
 
-  const payload={...a,status,updatedAt:new Date().toISOString()};
+  const payload={...a,status,updatedAt:nowIso};
   await firebase.fsMod.setDoc(ref,payload,{merge:true});
   await publishAssessmentPublic(payload);
   return payload;
 }
 
+
 export async function closeAssessmentStatusOnly(assessmentId,reason="AUTO_CLOSE"){
   requireAssessmentCloud();
   const id=String(assessmentId);
-  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
-  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
-  const privateSnap=await firebase.fsMod.getDoc(privateRef);
-  if(!privateSnap.exists())throw new Error("수행평가를 찾을 수 없습니다.");
-  const batch=firebase.fsMod.writeBatch(db);
-  batch.set(privateRef,{status:"CLOSED",closeReason:String(reason||"AUTO_CLOSE"),closedAt:firebase.fsMod.serverTimestamp(),updatedAt:new Date().toISOString()},{merge:true});
-  batch.set(publicRef,{status:"CLOSED",closeReason:String(reason||"AUTO_CLOSE"),closedAt:firebase.fsMod.serverTimestamp(),updatedAt:firebase.fsMod.serverTimestamp()},{merge:true});
-  await commitAssessmentBatch_(batch,"평가 상태 종료");
-  return true;
+  const now=new Date();
+  const nowIso=now.toISOString();
+  const privatePath=["users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id];
+  const publicPath=["publicCourses",activeProjectId,"assessments",id];
+  const privateData={status:"CLOSED",closeReason:String(reason||"AUTO_CLOSE"),closedAt:now,updatedAt:nowIso};
+  const publicData={ownerUid:currentUser.uid,status:"CLOSED",closeReason:String(reason||"AUTO_CLOSE"),closedAt:now,updatedAt:now};
+  const writes=[restUpdateWrite_(privatePath,privateData,{mustExist:true}),restUpdateWrite_(publicPath,publicData)];
+  const sdkFactory=()=>{
+    const batch=firebase.fsMod.writeBatch(db);
+    batch.set(firebase.fsMod.doc(db,...privatePath),{...privateData,closedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+    batch.set(firebase.fsMod.doc(db,...publicPath),{...publicData,closedAt:firebase.fsMod.Timestamp.fromDate(now),updatedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+    return batch;
+  };
+  const r=await commitAssessmentLifecycle_(writes,"평가 상태 종료",sdkFactory);
+  return {ok:true,id,transport:r.transport};
 }
 
 
@@ -1035,43 +1164,60 @@ async function retryAssessmentLifecycle_(label, fn, attempts=4){
   throw lastErr||new Error(`${label} 처리에 실패했습니다.`);
 }
 
-export async function setAssessmentStatusVerified(assessmentId,status){
-  // v3.1.2: 상태 변경 batch.commit 자체가 서버 승인 완료를 의미한다.
-  // 승인 후 추가 서버 재조회로 다시 기다리지 않는다.
-  return setAssessmentStatus(String(assessmentId),status);
+export async function setAssessmentStatusVerified(assessmentId,status,assessmentSnapshot=null){
+  // v3.2.1: 입장/시작은 화면에 이미 로드된 서버 스냅샷을 사용하고,
+  // 실제 상태 반영만 REST commit으로 수행한다. SDK 사전 읽기 큐에 의존하지 않는다.
+  return setAssessmentStatus(String(assessmentId),status,assessmentSnapshot);
 }
 
 export async function closeAssessmentImmediate(assessmentId,reason="TEACHER_CLOSE"){
   requireAssessmentCloud();
   const id=String(assessmentId);
-  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
-  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
-  const batch=firebase.fsMod.writeBatch(db);
-  const common={status:"CLOSED",closeReason:String(reason||"TEACHER_CLOSE"),closedAt:firebase.fsMod.serverTimestamp()};
-  batch.set(privateRef,{...common,updatedAt:new Date().toISOString()},{merge:true});
-  batch.set(publicRef,{...common,updatedAt:firebase.fsMod.serverTimestamp()},{merge:true});
-
-  // v3.1.2 핵심: commit 성공 = Firestore 백엔드가 private/public CLOSED를 모두 승인한 상태.
-  // v3.1.1의 getDocFromServer/getDocsFromServer 재확인이 무기한 대기하는 문제를 제거한다.
-  await commitAssessmentBatch_(batch,"평가 종료");
-  return {ok:true,id};
+  const now=new Date();
+  const nowIso=now.toISOString();
+  const privatePath=["users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id];
+  const publicPath=["publicCourses",activeProjectId,"assessments",id];
+  const privateData={status:"CLOSED",closeReason:String(reason||"TEACHER_CLOSE"),closedAt:now,updatedAt:nowIso};
+  const publicData={ownerUid:currentUser.uid,status:"CLOSED",closeReason:String(reason||"TEACHER_CLOSE"),closedAt:now,updatedAt:now};
+  const writes=[restUpdateWrite_(privatePath,privateData,{mustExist:true}),restUpdateWrite_(publicPath,publicData)];
+  const sdkFactory=()=>{
+    const batch=firebase.fsMod.writeBatch(db);
+    batch.set(firebase.fsMod.doc(db,...privatePath),{...privateData,closedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+    batch.set(firebase.fsMod.doc(db,...publicPath),{...publicData,closedAt:firebase.fsMod.Timestamp.fromDate(now),updatedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+    return batch;
+  };
+  const r=await commitAssessmentLifecycle_(writes,"평가 종료",sdkFactory);
+  return {ok:true,id,transport:r.transport};
 }
 
-export async function setAssessmentDuration(assessmentId,minutes){
+
+export async function setAssessmentDuration(assessmentId,minutes,assessmentSnapshot=null){
   requireAssessmentCloud();
   const duration=Math.max(1,Math.min(300,Number(minutes||0)));
   if(!Number.isFinite(duration)) throw new Error("시험시간을 확인해 주세요.");
-  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",String(assessmentId));
-  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",String(assessmentId));
-  const snap=await firebase.fsMod.getDoc(privateRef);
-  if(!snap.exists()) throw new Error("수행평가를 찾을 수 없습니다.");
-  if(String(snap.data().status||"")==="OPEN") throw new Error("시험 시작 후에는 기본 시험시간을 변경할 수 없습니다. 추가시간 기능을 사용하세요.");
-  const batch=firebase.fsMod.writeBatch(db);
-  batch.update(privateRef,{durationMinutes:duration,updatedAt:new Date().toISOString()});
-  batch.update(publicRef,{durationMinutes:duration,updatedAt:firebase.fsMod.serverTimestamp()});
-  await batch.commit();
+  const id=String(assessmentId);
+  // v3.2.1: 시험 시작 직전 시험시간 저장도 SDK getDoc() 선행 없이 처리한다.
+  if(!assessmentSnapshot || String(assessmentSnapshot.id||"")!==id){
+    throw new Error("현재 평가 정보가 없습니다. 수행평가 목록을 다시 선택한 뒤 시도해 주세요.");
+  }
+  if(String(assessmentSnapshot.status||"")==="OPEN") throw new Error("시험 시작 후에는 기본 시험시간을 변경할 수 없습니다. 추가시간 기능을 사용하세요.");
+  const now=new Date();
+  const privatePath=["users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id];
+  const publicPath=["publicCourses",activeProjectId,"assessments",id];
+  const writes=[
+    restUpdateWrite_(privatePath,{durationMinutes:duration,updatedAt:now.toISOString()},{mustExist:true}),
+    restUpdateWrite_(publicPath,{ownerUid:currentUser.uid,durationMinutes:duration,updatedAt:now})
+  ];
+  const sdkFactory=()=>{
+    const batch=firebase.fsMod.writeBatch(db);
+    batch.update(firebase.fsMod.doc(db,...privatePath),{durationMinutes:duration,updatedAt:now.toISOString()});
+    batch.set(firebase.fsMod.doc(db,...publicPath),{ownerUid:currentUser.uid,durationMinutes:duration,updatedAt:firebase.fsMod.Timestamp.fromDate(now)},{merge:true});
+    return batch;
+  };
+  await commitAssessmentLifecycle_(writes,"시험시간 저장",sdkFactory);
   return duration;
 }
+
 
 export async function extendAssessmentTime(assessmentId,minutes){
   requireAssessmentCloud();
@@ -1237,22 +1383,25 @@ async function cleanupAssessmentChildrenBestEffort_(assessmentId){
 export async function deleteAssessment(assessmentId){
   requireAssessmentCloud();
   const id=String(assessmentId);
-  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
-  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
-  const contentRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id,"content","main");
+  const privatePath=["users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id];
+  const publicPath=["publicCourses",activeProjectId,"assessments",id];
+  const contentPath=["publicCourses",activeProjectId,"assessments",id,"content","main"];
 
-  // v3.1.2: 목록/학생 입장에 영향을 주는 상위 문서를 먼저 하나의 batch로 서버에서 삭제 확정한다.
-  // commit이 resolve 되면 서버 삭제가 확정된 것이므로 추가 getDocFromServer 검증으로 다시 기다리지 않는다.
-  const batch=firebase.fsMod.writeBatch(db);
-  batch.delete(privateRef);
-  batch.delete(contentRef);
-  batch.delete(publicRef);
-  await commitAssessmentBatch_(batch,"평가 삭제");
-
-  // attempts/sessions는 평가 ID 하위의 고립 데이터이므로 평가 삭제 성공을 막지 않고 뒤에서 정리한다.
+  // v3.2.1: 삭제도 REST commit을 우선 사용해 SDK pending-write queue와 분리한다.
+  // 상위 문서가 실제 서버에서 삭제된 뒤에만 성공을 반환한다.
+  const writes=[restDeleteWrite_(contentPath),restDeleteWrite_(publicPath),restDeleteWrite_(privatePath)];
+  const sdkFactory=()=>{
+    const batch=firebase.fsMod.writeBatch(db);
+    batch.delete(firebase.fsMod.doc(db,...contentPath));
+    batch.delete(firebase.fsMod.doc(db,...publicPath));
+    batch.delete(firebase.fsMod.doc(db,...privatePath));
+    return batch;
+  };
+  const r=await commitAssessmentLifecycle_(writes,"평가 삭제",sdkFactory);
   cleanupAssessmentChildrenBestEffort_(id);
-  return {id,serverDeleted:true};
+  return {id,serverDeleted:true,transport:r.transport};
 }
+
 
 export function watchAssessmentAttempts(assessmentId,callback){
   requireAssessmentCloud();
