@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.8";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.8";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.9";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.9";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -1089,7 +1089,7 @@ async function finalizeAttemptRefs(items,reason){
   return {finalized,failed,errorCodes:[...errorCodes]};
 }
 
-const ASSESSMENT_FINALIZE_GRACE_MS=30000;
+const ASSESSMENT_FINALIZE_GRACE_MS=15000;
 
 export async function finalizeExpiredAssessmentAttempts(assessmentId,nowMs=Date.now()){
   requireAssessmentCloud();

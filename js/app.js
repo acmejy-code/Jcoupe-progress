@@ -1,4 +1,4 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.8";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.9";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -10,14 +10,26 @@ import {
   watchAssessmentAttempts, resetAssessmentRun, setAssessmentDuration, extendAssessmentTime, extendAssessmentStudentTime,
   reopenAssessmentAttempt, finalizeExpiredAssessmentAttempts, finalizeAllAssessmentAttempts, getAssessmentServerTimeMs,
   getAssessmentRecoverySnapshots
-} from "./db.js?v=2.6.8";
+} from "./db.js?v=2.6.9";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const pad=n=>String(n).padStart(2,"0");
 const toYmd=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const parseLocalDate=s=>new Date(`${s}T12:00:00`);
-const ASSESSMENT_FINALIZE_GRACE_MS=30000; // v2.6.8: 0초 후 30초간 답안 수정은 잠그고 학생 자체 제출/네트워크 복구만 기다림
+const ASSESSMENT_FINALIZE_GRACE_MS=15000; // v2.6.9: 미제출자가 있을 때만 0초 후 15초 통신 유예
+
+function assessmentTargetStudentIds(a){
+  const target=(a?.targetClasses?.length?a.targetClasses:projectClasses()).map(String);
+  return students.filter(st=>target.includes(String(st.className))).map(st=>String(st.studentId));
+}
+function selectedAssessmentAllSubmitted(a){
+  if(!a||a.id!==selectedAssessmentId)return false;
+  const expected=assessmentTargetStudentIds(a);
+  if(!expected.length)return false;
+  const byId=new Map(assessmentAttempts.map(at=>[String(at.studentId||at.id),at]));
+  return expected.every(id=>byId.get(id)?.status==="SUBMITTED");
+}
 const todayYmd=()=>toYmd(new Date());
 const makeId=()=>crypto.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const weekdays=["일","월","화","수","목","금","토"];
@@ -1119,7 +1131,13 @@ async function applyRoster(){
 }
 function startAttemptWatch(){
   if(storageMode()!=="cloud"||!selectedAssessmentId){assessmentAttempts=[];return;}
-  try{watchAssessmentAttempts(selectedAssessmentId,(rows,err)=>{if(err)return;assessmentAttempts=rows;renderAssessmentMonitor();});}catch(err){console.error(err);}
+  try{watchAssessmentAttempts(selectedAssessmentId,(rows,err)=>{
+    if(err)return;
+    assessmentAttempts=rows;
+    renderAssessmentMonitor();
+    // 마지막 학생 제출 직후 3초 주기까지 기다리지 않고 즉시 종료 여부를 확인한다.
+    Promise.resolve().then(()=>runExpiredFinalize()).catch(e=>console.warn("전원 제출 즉시 종료 확인 실패",e));
+  });}catch(err){console.error(err);}
 }
 function monitorEventSummary(at){
   const focus=Number(at?.focusLossCount||0),copy=Number(at?.copyCount||0),paste=Number(at?.pasteCount||0),right=Number(at?.contextMenuCount||0);
@@ -1372,16 +1390,28 @@ async function runExpiredFinalize(){
   if(assessmentDeadlineBusy||storageMode()!=="cloud")return;
   const open=assessments.filter(a=>a.status==="OPEN"&&assessmentDeadlineMs(a));
   if(!open.length)return;
-  await syncAssessmentServerClock();
-  const now=assessmentNowMs();
-  const shouldCheck=open.filter(a=>{
-    if(now>=assessmentDeadlineMs(a)+ASSESSMENT_FINALIZE_GRACE_MS)return true;
-    if(a.id!==selectedAssessmentId)return false;
-    return assessmentAttempts.some(at=>at.status!=="SUBMITTED"&&assessmentDeadlineMs(a,at)&&now>=assessmentDeadlineMs(a,at)+ASSESSMENT_FINALIZE_GRACE_MS);
-  });
-  if(!shouldCheck.length)return;
+
   assessmentDeadlineBusy=true;
   try{
+    // v2.6.9: 선택된 평가에서 대상 학생 전원이 이미 SUBMITTED라면
+    // 시험 종료 시각/유예시간을 기다리지 않고 즉시 CLOSED 처리한다.
+    // 대상 반 명단 전체와 대조하므로 일부 학생이 미접속인 상태에서는 조기 종료되지 않는다.
+    const selectedOpen=open.find(a=>a.id===selectedAssessmentId);
+    if(selectedOpen&&selectedAssessmentAllSubmitted(selectedOpen)){
+      await setAssessmentStatus(selectedOpen.id,"CLOSED");
+      toast("대상 학생 전원이 제출하여 평가를 자동 종료했습니다.");
+      return;
+    }
+
+    await syncAssessmentServerClock();
+    const now=assessmentNowMs();
+    const shouldCheck=open.filter(a=>{
+      if(now>=assessmentDeadlineMs(a)+ASSESSMENT_FINALIZE_GRACE_MS)return true;
+      if(a.id!==selectedAssessmentId)return false;
+      return assessmentAttempts.some(at=>at.status!=="SUBMITTED"&&assessmentDeadlineMs(a,at)&&now>=assessmentDeadlineMs(a,at)+ASSESSMENT_FINALIZE_GRACE_MS);
+    });
+    if(!shouldCheck.length)return;
+
     for(const a of shouldCheck){
       const result=await finalizeExpiredAssessmentAttempts(a.id,now);
       if(result.finalized>0)toast(`시험시간이 끝난 ${result.finalized}명의 마지막 저장 답안을 자동 제출했습니다.`);
