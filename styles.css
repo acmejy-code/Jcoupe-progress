@@ -138,3 +138,20 @@ body.presentation-open{overflow:hidden}
 .status-expired_pending{border-color:#f59e0b;background:#fffbeb}
 
 /* v2.6.8 - 평가 삭제/개인 1분 단위 시간추가 UI는 기존 공통 버튼·inline-field 스타일 사용 */
+
+
+/* v3.1.0 - 수행평가 목록 접기 + 평가별 독립 운영 UI */
+.assessment-list-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+.assessment-list-head h3{margin:0}
+.assessment-list-toggle{width:30px;height:30px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#334155;font-weight:900;cursor:pointer;display:grid;place-items:center;flex:0 0 auto}
+.assessment-list-toggle:hover{background:#f8fafc;border-color:#94a3b8}
+.assessment-layout.list-collapsed{grid-template-columns:52px minmax(0,1fr)}
+.assessment-layout.list-collapsed .assessment-list-panel{padding:10px;min-width:0;display:flex;justify-content:center;align-items:flex-start}
+.assessment-layout.list-collapsed .assessment-list-head{margin:0;display:block}
+.assessment-layout.list-collapsed .assessment-list-head h3,.assessment-layout.list-collapsed .assessment-list{display:none}
+.assessment-layout.list-collapsed .assessment-list-toggle{width:32px;height:38px}
+@media(max-width:900px){
+  .assessment-layout.list-collapsed{grid-template-columns:1fr}
+  .assessment-layout.list-collapsed .assessment-list-panel{padding:8px 12px;justify-content:flex-start}
+  .assessment-layout.list-collapsed .assessment-list-toggle{width:38px;height:30px}
+}

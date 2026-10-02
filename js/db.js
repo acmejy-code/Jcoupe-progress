@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=2.6.9";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=2.6.9";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.1.0";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.1.0";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -973,6 +973,63 @@ export async function setAssessmentStatus(assessmentId,status){
   await firebase.fsMod.setDoc(ref,payload,{merge:true});
   await publishAssessmentPublic(payload);
   return payload;
+}
+
+export async function closeAssessmentStatusOnly(assessmentId,reason="AUTO_CLOSE"){
+  requireAssessmentCloud();
+  const id=String(assessmentId);
+  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
+  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
+  const privateSnap=await firebase.fsMod.getDoc(privateRef);
+  if(!privateSnap.exists())throw new Error("수행평가를 찾을 수 없습니다.");
+  const batch=firebase.fsMod.writeBatch(db);
+  batch.set(privateRef,{status:"CLOSED",closeReason:String(reason||"AUTO_CLOSE"),closedAt:firebase.fsMod.serverTimestamp(),updatedAt:new Date().toISOString()},{merge:true});
+  batch.set(publicRef,{status:"CLOSED",closeReason:String(reason||"AUTO_CLOSE"),closedAt:firebase.fsMod.serverTimestamp(),updatedAt:firebase.fsMod.serverTimestamp()},{merge:true});
+  await batch.commit();
+  return true;
+}
+
+
+async function retryAssessmentLifecycle_(label, fn, attempts=4){
+  let lastErr=null;
+  const waits=[0,350,900,1800];
+  for(let i=0;i<Math.max(1,attempts);i++){
+    if(waits[i])await new Promise(r=>setTimeout(r,waits[i]));
+    try{return await fn();}catch(err){lastErr=err;console.warn(`${label} 재시도 ${i+1}/${attempts}`,err);}
+  }
+  throw lastErr||new Error(`${label} 처리에 실패했습니다.`);
+}
+
+export async function setAssessmentStatusVerified(assessmentId,status){
+  const id=String(assessmentId);
+  return retryAssessmentLifecycle_(`평가 상태 ${status}`,async()=>{
+    const result=await setAssessmentStatus(id,status);
+    const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
+    const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
+    const [pri,pub]=await Promise.all([firebase.fsMod.getDoc(privateRef),firebase.fsMod.getDoc(publicRef)]);
+    const ps=String(pri.data()?.status||""), qs=String(pub.data()?.status||"");
+    if(ps!==String(status)||qs!==String(status))throw new Error(`상태 확인 불일치 (관리자:${ps||"없음"}, 학생:${qs||"없음"})`);
+    return result;
+  },4);
+}
+
+export async function closeAssessmentImmediate(assessmentId,reason="TEACHER_CLOSE"){
+  requireAssessmentCloud();
+  const id=String(assessmentId);
+  return retryAssessmentLifecycle_("평가 즉시 종료",async()=>{
+    const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
+    const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
+    const pri=await firebase.fsMod.getDoc(privateRef);
+    if(!pri.exists())throw new Error("수행평가를 찾을 수 없습니다.");
+    const batch=firebase.fsMod.writeBatch(db);
+    const common={status:"CLOSED",closeReason:String(reason||"TEACHER_CLOSE"),closedAt:firebase.fsMod.serverTimestamp()};
+    batch.set(privateRef,{...common,updatedAt:new Date().toISOString()},{merge:true});
+    batch.set(publicRef,{...common,updatedAt:firebase.fsMod.serverTimestamp()},{merge:true});
+    await batch.commit();
+    const [p1,p2]=await Promise.all([firebase.fsMod.getDoc(privateRef),firebase.fsMod.getDoc(publicRef)]);
+    if(String(p1.data()?.status)!=="CLOSED"||String(p2.data()?.status)!=="CLOSED")throw new Error("종료 상태 확인에 실패했습니다.");
+    return true;
+  },4);
 }
 
 export async function setAssessmentDuration(assessmentId,minutes){

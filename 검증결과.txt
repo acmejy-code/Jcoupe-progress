@@ -1,10 +1,17 @@
-JCOUP 관리자 v2.6.9 정적 검증 결과
+JCOUP 관리자 v3.1.0 정적 검증 결과
 
-- APP_VERSION / 모듈 캐시 쿼리 v2.6.9 : 확인
-- 대상 반 전원 SUBMITTED 즉시 CLOSED 처리 : 반영
-- 미접속 학생 존재 시 조기 종료 방지(명단 전체 대조) : 반영
-- 마지막 제출 Firestore 실시간 이벤트 직후 종료 확인 : 반영
-- 미제출자 종료 통신 유예 15초 : 반영
-- 강제확정 감사정보/복구 후보/CSV 확장 : v2.6.8 기능 유지
-- 평가 삭제/개인 1분 단위 추가시간 : v2.6.7 기능 유지
-- Firestore Rules : 변경 없음
+- 관리자 버전 3.1.0: 확인
+- 전역 마감 busy 제거: 확인
+- 평가별 finalize lock: 확인
+- 평가별 병렬 마감: 확인
+- 즉시 종료 assessmentId 경로: 확인
+- 만료 확정 assessmentId 하위 attempts: 확인
+- 전체 확정 assessmentId 하위 attempts: 확인
+- 평가목록 접기: 확인
+- Firestore Rules 동일: 확인
+
+평가 생명주기 점검:
+- WAITING/OPEN/CLOSED 변경은 선택한 assessmentId의 private/public 문서만 갱신합니다.
+- 자동 마감은 assessmentId별 독립 lock으로 실행되어 한 평가의 지연이 다른 평가 실행을 막지 않습니다.
+- 강제 제출/CSV/삭제/초기화는 각 assessmentId 하위 attempts/sessions만 대상으로 합니다.
+- Firestore Rules 변경 없음. 기존 데이터 구조 유지.
