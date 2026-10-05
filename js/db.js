@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.3.0";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.3.0";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.4.0";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.4.0";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";

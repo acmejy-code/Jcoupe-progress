@@ -1,4 +1,4 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.3.0";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.4.0";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -10,7 +10,7 @@ import {
   watchAssessmentAttempts, resetAssessmentRun, setAssessmentDuration, extendAssessmentTime, extendAssessmentStudentTime,
   reopenAssessmentAttempt,
   closeAssessmentStatusOnly, closeAssessmentImmediate, setAssessmentStatusVerified, getAssessmentRecoverySnapshots
-} from "./db.js?v=3.3.0";
+} from "./db.js?v=3.4.0";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -887,15 +887,15 @@ function statusInfo(studentId){
   let ms=0; try{const d=a.lastSeenAt?.toDate?a.lastSeenAt.toDate():new Date(a.lastSeenAt);ms=Date.now()-d.getTime();}catch{}
   if(a.status==="WAITING"){
     if(a.waitingActive===false)return {key:"WAITING_LEFT",label:"대기실 나감",sub:a.lastSeenAt?`마지막 ${fmtDateTime(a.lastSeenAt)}`:"-"};
-    if(ms>100000)return {key:"STALE",label:"대기실 연결 끊김",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
-    if(ms>45000)return {key:"WARNING",label:"대기실 연결 지연",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
+    if(ms>150000)return {key:"STALE",label:"대기실 연결 끊김",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
+    if(ms>75000)return {key:"WARNING",label:"대기실 연결 지연",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
     return {key:"WAITING",label:"대기실 입장",sub:a.lastSeenAt?`접속 ${fmtDateTime(a.lastSeenAt)}`:"입장 확인"};
   }
   const currentAssessment=assessments.find(x=>x.id===selectedAssessmentId);
   const deadline=currentAssessment?assessmentDeadlineMs(currentAssessment,a):0;
   if(deadline&&assessmentNowMs()>=deadline)return {key:"EXPIRED_PENDING",label:"종료 · 확정 대기",sub:a.lastSavedAt?`마지막 저장 ${fmtDateTime(a.lastSavedAt)}`:"서버 저장 확인 중"};
-  if(ms>100000)return {key:"STALE",label:"접속 이상",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
-  if(ms>45000)return {key:"WARNING",label:"연결 지연",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
+  if(ms>150000)return {key:"STALE",label:"접속 이상",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
+  if(ms>75000)return {key:"WARNING",label:"연결 지연",sub:`마지막 신호 ${Math.floor(ms/1000)}초 전`};
   return {key:"IN_PROGRESS",label:"응시중",sub:a.lastSavedAt?`저장 ${fmtDateTime(a.lastSavedAt)}`:"접속 확인"};
 }
 
@@ -1186,8 +1186,8 @@ function startAttemptWatch(){
   });}catch(err){console.error(err);}
 }
 function monitorEventSummary(at){
-  const focus=Number(at?.focusLossCount||0),copy=Number(at?.copyCount||0),paste=Number(at?.pasteCount||0),right=Number(at?.contextMenuCount||0);
-  const bits=[];if(focus)bits.push(`이탈 ${focus}`);if(copy)bits.push(`복사 ${copy}`);if(paste)bits.push(`붙여넣기 ${paste}`);if(right)bits.push(`우클릭 ${right}`);
+  const focus=Number(at?.focusLossCount||0),copy=Number(at?.copyCount||0),paste=Number(at?.pasteCount||0);
+  const bits=[];if(focus)bits.push(`이탈 ${focus}`);if(copy)bits.push(`복사 ${copy}`);if(paste)bits.push(`붙여넣기 ${paste}`);
   return bits.join(" · ");
 }
 function eventLabel(type){
@@ -1201,7 +1201,7 @@ function openMonitorControl(studentId){
   $("monitorStudentTitle").textContent=`${st.studentId} ${st.name}`;
   const events=Array.isArray(at.eventLog)?[...at.eventLog].slice(-30).reverse():[];
   $("monitorStudentMeta").innerHTML=`상태: <b>${esc(statusInfo(studentId).label)}</b> · 개인 추가시간 <b>${Number(at.extraMinutes||0)}분</b> · 재응시 ${Number(at.reopenCount||0)}회`;
-  $("monitorEventList").innerHTML=events.length?events.map(e=>`<div class="monitor-event-row"><b>${esc(eventLabel(e.type))}</b><span>${esc(e.at?new Date(e.at).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"-")}</span>${e.detail?`<small>${esc(e.detail)}</small>`:""}</div>`).join(""):`<div class="small muted">기록된 화면 이탈·복사·붙여넣기 이벤트가 없습니다.</div>`;
+  $("monitorEventList").innerHTML=events.length?events.map(e=>`<div class="monitor-event-row"><b>${esc(eventLabel(e.type))}</b><span>${esc(e.at?new Date(e.at).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"-")}</span>${e.detail?`<small>${esc(e.detail)}</small>`:""}</div>`).join(""):`<div class="small muted">기록된 3초 이상 화면 이탈·실제 복사·붙여넣기 이벤트가 없습니다.</div>`;
   $("monitorStudentDialog").showModal();
 }
 function renderAssessmentMonitor(){
@@ -1227,7 +1227,7 @@ function renderAssessmentMonitor(){
       ${events?`<small class="seat-integrity">${esc(events)}</small>`:""}
     </div>`;
   }).join("");
-  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">대기실 입장 학생은 문항을 볼 수 없습니다. 시험 시작 후 정상 신호는 초록, 45초 이상 지연은 노랑, 100초 이상 무응답일 때만 빨강으로 표시합니다.</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>대기 ${count("WAITING")}</span><span>대기실 나감 ${count("WAITING_LEFT")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>지연 ${count("WARNING")}</span><span>제출 ${count("SUBMITTED")}</span><span>확정대기 ${count("EXPIRED_PENDING")}</span><span>접속이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-room-layout">${leftMarker}<div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr));grid-template-rows:repeat(${depth},auto)">${seatHtml}</div>${rightMarker}</div><div class="seat-tools"><span class="small muted">카드의 ⋯ 버튼에서 개인 추가시간과 재응시를 허용할 수 있습니다. 화면 이탈 기록은 감독 참고용이며 자동으로 부정행위로 확정하지 않습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
+  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">대기실 입장 학생은 문항을 볼 수 없습니다. 시험 시작 후 heartbeat는 약 60초 주기입니다. 마지막 신호 75초 이내는 정상, 75초 초과는 지연, 150초 초과 무응답일 때만 접속 이상으로 표시합니다.</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>대기 ${count("WAITING")}</span><span>대기실 나감 ${count("WAITING_LEFT")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>지연 ${count("WARNING")}</span><span>제출 ${count("SUBMITTED")}</span><span>확정대기 ${count("EXPIRED_PENDING")}</span><span>접속이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-room-layout">${leftMarker}<div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr));grid-template-rows:repeat(${depth},auto)">${seatHtml}</div>${rightMarker}</div><div class="seat-tools"><span class="small muted">카드의 ⋯ 버튼에서 개인 추가시간과 재응시를 허용할 수 있습니다. 화면 이탈·복사·붙여넣기는 감독 참고용입니다. 학생용 v1.7.0부터 3초 이상 화면 숨김과 실제 copy/paste만 기록하며 자동으로 부정행위로 확정하지 않습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
   let dragIndex=null;
   root.querySelectorAll("[data-monitor-slot]").forEach(slot=>{slot.ondragover=e=>e.preventDefault();slot.ondrop=e=>{e.preventDefault();const to=Number(slot.dataset.monitorSlot);if(dragIndex===null||to===dragIndex)return;const tmp=slots[to]??null;slots[to]=slots[dragIndex]??null;slots[dragIndex]=tmp;dragIndex=null;const ids=verticalStudentOrder(slots);saveSeatLayout(cls,depth,ids,slots).then(()=>toast("좌석 위치를 저장했습니다.")).catch(err=>alert(err.message));};});
   root.querySelectorAll("[data-seat-student]").forEach(card=>{card.ondragstart=e=>{if(e.target.closest?.("[data-monitor-control]")){e.preventDefault();return;}dragIndex=Number(card.dataset.monitorSlot);draggedStudentId=card.dataset.seatStudent};card.ondragend=()=>{dragIndex=null;draggedStudentId=null};});

@@ -1,0 +1,7 @@
+JCOUP 관리자 v3.3.0 검증 결과
+- JavaScript 문법 검사: 통과
+- 평가별 독립 상태 처리 유지
+- 3초 주기 attempts 전체 조회/강제제출 제거 확인
+- 429 quota 오류 시 SDK 중복 재시도 차단 확인
+- 평가 목록 접기 기능 유지
+- Firestore Rules 변경 없음
