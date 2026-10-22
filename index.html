@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="theme-color" content="#1d4ed8"/>
   <title>제이쿱 수업 통합 제어 시스템</title>
-  <link rel="stylesheet" href="./styles.css"/>
+  <link rel="stylesheet" href="./styles.css?v=3.5.1"/>
 </head>
 <body>
 <div class="app">
@@ -133,7 +133,7 @@
       <button type="button" class="btn danger hidden" id="deleteBtn">삭제</button>
       <span class="spacer"></span>
       <button type="button" class="btn" id="cancelBtn">취소</button>
-      <button type="submit" class="btn primary" id="saveAssessmentBtn">저장</button>
+      <button type="submit" class="btn primary" id="saveRecordBtn">저장</button>
     </div>
   </form>
 </dialog>
@@ -177,7 +177,7 @@
     <div class="modal-foot">
       <span class="spacer"></span>
       <button type="button" class="btn" id="cancelProjectBtn">취소</button>
-      <button type="submit" class="btn primary" id="saveAssessmentBtn">저장</button>
+      <button type="submit" class="btn primary" id="saveProjectBtn">저장</button>
     </div>
   </form>
 </dialog>
@@ -210,7 +210,7 @@
       <button type="button" class="btn danger hidden" id="deleteMaterialBtn">삭제</button>
       <span class="spacer"></span>
       <button type="button" class="btn" id="cancelMaterialBtn">취소</button>
-      <button type="submit" class="btn primary" id="saveAssessmentBtn">저장</button>
+      <button type="submit" class="btn primary" id="saveMaterialBtn">저장</button>
     </div>
   </form>
 </dialog>
@@ -262,13 +262,26 @@
   </div>
   <form id="assessmentForm">
     <div class="modal-body">
-      <div class="field full"><label>수행평가 제목</label><input id="assessmentTitle" required placeholder="예: 전국연합 독서 지문 분석 수행평가"/></div>
+      <div class="field"><label>평가 유형</label><select id="assessmentMode"><option value="EXAM">기존 시험형 수행평가</option><option value="ARGUMENT_TWO_STAGE">수행평가2 · 2단계 입론서형</option></select><div class="small muted">2단계형은 반별로 2차시 → 추가자료 등록 → 3차시를 독립 운영합니다.</div></div>
+      <div class="field"><label>수행평가 제목</label><input id="assessmentTitle" required placeholder="예: 수행평가2 · 토론 입론서 작성"/></div>
       <div class="field full"><label>학생 안내</label><textarea id="assessmentDescription" placeholder="포털의 수행평가 목록에서 학생에게 보일 간단한 안내"></textarea></div>
       <div class="field full"><label>응시 화면 안내</label><textarea id="assessmentInstructions" placeholder="답안 작성 방법, 유의사항 등을 입력"></textarea></div>
       <div class="field"><label>응시코드</label><div class="inline-field"><input id="assessmentAccessCode" required autocomplete="off" placeholder="예: READ01"/><button type="button" class="btn small-btn" id="generateAccessCodeBtn">자동 생성</button></div></div>
-      <div class="field"><label>시험 시간(분)</label><input type="number" id="assessmentDuration" min="1" max="180" value="50"/><div class="small muted">교사가 [평가 시작]을 누르는 순간부터 모든 학생에게 같은 시간이 적용됩니다.</div></div>
+      <div class="field" id="legacyAssessmentDurationField"><label>시험 시간(분)</label><input type="number" id="assessmentDuration" min="1" max="180" value="50"/><div class="small muted">교사가 [평가 시작]을 누르는 순간부터 모든 학생에게 같은 시간이 적용됩니다.</div></div>
       <div class="field full"><label>응시 대상 반</label><div id="assessmentClassChecks" class="check-grid"></div></div>
-      <div class="field full">
+      <div class="field full hidden" id="twoStageConfig">
+        <div class="two-stage-config-head">
+          <div><label>2단계 입론서형 설정</label><div class="small muted">2차시는 지문·논제 선택과 사고과정 기록, 이후에는 추가자료 PDF 등록, 3차시는 최종 입론서 작성으로 운영합니다.</div></div>
+          <div class="two-stage-duration-grid">
+            <label>2차시 권장시간(분)<input type="number" id="phase2Duration" min="10" max="120" value="45"></label>
+            <label>3차시 권장시간(분)<input type="number" id="phase3Duration" min="10" max="120" value="45"></label>
+            <label>추가자료 최대 PDF<input type="number" id="extraMaterialMaxFiles" min="0" max="5" value="3"></label>
+          </div>
+        </div>
+        <div class="small muted two-stage-help">교사 제공 자료는 각 지문 카드의 ‘자료명 | URL’에 한 줄씩 등록합니다. 3차시 자료 통제를 위해 웹페이지 링크가 아니라 Google Drive의 PDF 파일 링크 또는 직접 PDF 링크만 사용합니다. 학생 추가자료 서식은 학생 포털에 DOCX로 고정 제공됩니다.</div>
+        <div id="twoStageTopicEditor" class="two-stage-topic-editor"></div>
+      </div>
+      <div class="field full" id="legacyAssessmentQuestionField">
         <div class="field-title-row"><label>문항</label><button type="button" class="btn small-btn" id="addQuestionBtn">＋ 문항 추가</button></div>
         <div id="assessmentQuestionEditor" class="question-editor"></div>
       </div>
@@ -457,6 +470,6 @@
 
 <div class="toast" id="toast"></div>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script type="module" src="./js/app.js?v=3.4.0"></script>
+  <script type="module" src="./js/app.js?v=3.5.1"></script>
 </body>
 </html>

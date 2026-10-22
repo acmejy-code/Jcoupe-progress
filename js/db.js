@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.4.0";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.4.0";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.5.1";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.1";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -930,23 +930,53 @@ function normalizeStudent(student){
   };
 }
 function normalizeAssessment(assessment){
+  const mode=String(assessment.mode||"EXAM")==="ARGUMENT_TWO_STAGE"?"ARGUMENT_TWO_STAGE":"EXAM";
   const questions=Array.isArray(assessment.questions)?assessment.questions.map((q,i)=>({
     id:String(q.id||`q${i+1}`),
     prompt:String(q.prompt||"").trim(),
     placeholder:String(q.placeholder||"").trim(),
     required:q.required!==false
   })).filter(q=>q.prompt):[];
+  const topicSets=Array.isArray(assessment.topicSets)?assessment.topicSets.map((t,i)=>({
+    id:String(t?.id||`topic${i+1}`),
+    title:String(t?.title||"").trim(),
+    propositions:(Array.isArray(t?.propositions)?t.propositions:[]).map((x,j)=>({id:String(x?.id||`p${j+1}`),text:String(x?.text||x||"").trim()})).filter(x=>x.text).slice(0,3),
+    teacherMaterials:(Array.isArray(t?.teacherMaterials)?t.teacherMaterials:[]).map((m,j)=>({id:String(m?.id||`m${j+1}`),title:String(m?.title||`자료 ${j+1}`).trim(),url:String(m?.url||"").trim()})).filter(m=>m.url)
+  })).filter(t=>t.title&&t.propositions.length):[];
+  const targetClasses=Array.isArray(assessment.targetClasses)?assessment.targetClasses.map(String).filter(Boolean):[];
+  const allowedStages=new Set(["PHASE2_READY","PHASE2_OPEN","MATERIAL_WINDOW","PHASE3_OPEN","CLOSED"]);
+  const incomingStages=(assessment.classStages&&typeof assessment.classStages==="object")?assessment.classStages:{};
+  const classStages={};
+  targetClasses.forEach(cls=>{
+    const prev=incomingStages?.[cls]||{};
+    classStages[cls]={
+      stage:allowedStages.has(String(prev.stage))?String(prev.stage):"PHASE2_READY",
+      phase2StartedAt:prev.phase2StartedAt||null,
+      materialOpenedAt:prev.materialOpenedAt||null,
+      phase3StartedAt:prev.phase3StartedAt||null,
+      closedAt:prev.closedAt||null,
+      updatedAt:prev.updatedAt||null
+    };
+  });
+  const allowedStatus=mode==="ARGUMENT_TWO_STAGE"?["DRAFT","ACTIVE","CLOSED"]:["DRAFT","WAITING","OPEN","CLOSED"];
   return {
     id:String(assessment.id||crypto.randomUUID()),
+    mode,
     title:String(assessment.title||"").trim(),
     description:String(assessment.description||"").trim(),
     instructions:String(assessment.instructions||"").trim(),
     accessCode:String(assessment.accessCode||"").trim(),
-    targetClasses:Array.isArray(assessment.targetClasses)?assessment.targetClasses.map(String).filter(Boolean):[],
+    targetClasses,
     durationMinutes:Math.max(0,Number(assessment.durationMinutes||0)),
+    phase2DurationMinutes:Math.max(10,Number(assessment.phase2DurationMinutes||45)),
+    phase3DurationMinutes:Math.max(10,Number(assessment.phase3DurationMinutes||45)),
+    extraMaterialMaxFiles:Math.max(0,Math.min(5,Number(assessment.extraMaterialMaxFiles??3))),
+    extraMaterialMaxBytes:Math.max(1024*1024,Math.min(15*1024*1024,Number(assessment.extraMaterialMaxBytes||5*1024*1024))),
+    classStages,
+    topicSets,
     timeExtensionMinutes:Math.max(0,Number(assessment.timeExtensionMinutes||0)),
     startedAt:assessment.startedAt||null,
-    status:["DRAFT","WAITING","OPEN","CLOSED"].includes(String(assessment.status))?String(assessment.status):"DRAFT",
+    status:allowedStatus.includes(String(assessment.status))?String(assessment.status):"DRAFT",
     questions,
     projectId:activeProjectId,
     createdAt:assessment.createdAt||new Date().toISOString(),
@@ -981,27 +1011,37 @@ async function publishAssessmentPublic(assessment){
   batch.set(metaRef,{
     ownerUid:currentUser.uid,
     assessmentId:a.id,
+    mode:a.mode,
     title:a.title,
     description:a.description,
     status:a.status,
     targetClasses:a.targetClasses,
     durationMinutes:a.durationMinutes,
+    phase2DurationMinutes:a.phase2DurationMinutes,
+    phase3DurationMinutes:a.phase3DurationMinutes,
+    extraMaterialMaxFiles:a.extraMaterialMaxFiles,
+    extraMaterialMaxBytes:a.extraMaterialMaxBytes,
+    classStages:a.classStages,
     timeExtensionMinutes:a.timeExtensionMinutes||0,
     startedAt:a.startedAt||null,
-    questionCount:a.questions.length,
+    questionCount:a.mode==="ARGUMENT_TWO_STAGE"?0:a.questions.length,
     updatedAt:firebase.fsMod.serverTimestamp()
   },{merge:true});
   batch.set(contentRef,{
     assessmentId:a.id,
+    mode:a.mode,
     title:a.title,
     instructions:a.instructions,
     questions:a.questions,
+    topicSets:a.topicSets,
+    extraMaterialMaxFiles:a.extraMaterialMaxFiles,
+    extraMaterialMaxBytes:a.extraMaterialMaxBytes,
+    extraMaterialTemplatePath:"./assets/추가자료_등록서식.docx",
     updatedAt:firebase.fsMod.serverTimestamp()
   },{merge:true});
   await batch.commit();
   return a;
 }
-
 function buildVerticalDepthSlots(ids,depthCount){
   const list=(ids||[]).filter(Boolean).map(String);
   const depth=Math.min(8,Math.max(2,Number(depthCount||5)));
@@ -1060,7 +1100,13 @@ export async function upsertAssessment(assessment){
   if(!a.title) throw new Error("수행평가 제목을 입력해 주세요.");
   if(!a.accessCode) throw new Error("응시코드를 입력해 주세요.");
   if(!a.targetClasses.length) throw new Error("응시 대상 반을 한 개 이상 선택해 주세요.");
-  if(!a.questions.length) throw new Error("문항을 한 개 이상 등록해 주세요.");
+  if(a.mode==="ARGUMENT_TWO_STAGE"){
+    if(!a.topicSets.length)throw new Error("2단계형은 지문·논제 세트를 한 개 이상 등록해 주세요.");
+    const bad=a.topicSets.find(t=>t.propositions.length!==3);
+    if(bad)throw new Error(`「${bad.title}」의 논제를 정확히 3개 입력해 주세요.`);
+  }else if(!a.questions.length){
+    throw new Error("문항을 한 개 이상 등록해 주세요.");
+  }
   await firebase.fsMod.setDoc(
     firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",a.id),
     a,{merge:true}
@@ -1068,6 +1114,36 @@ export async function upsertAssessment(assessment){
   await publishAssessmentPublic(a);
   return a;
 }
+
+
+export async function setTwoStageClassStage(assessmentId,className,nextStage,assessmentSnapshot=null){
+  requireAssessmentCloud();
+  const id=String(assessmentId),cls=String(className||"").trim();
+  const allowed=["PHASE2_READY","PHASE2_OPEN","MATERIAL_WINDOW","PHASE3_OPEN","CLOSED"];
+  if(!allowed.includes(String(nextStage)))throw new Error("지원하지 않는 단계입니다.");
+  if(!assessmentSnapshot||String(assessmentSnapshot.id||"")!==id)throw new Error("현재 평가 정보가 없습니다.");
+  const a=normalizeAssessment(assessmentSnapshot);
+  if(a.mode!=="ARGUMENT_TWO_STAGE")throw new Error("2단계형 수행평가가 아닙니다.");
+  if(!a.targetClasses.includes(cls))throw new Error("평가 대상 반이 아닙니다.");
+  const now=new Date();
+  const prev=a.classStages?.[cls]||{stage:"PHASE2_READY"};
+  const entry={...prev,stage:String(nextStage),updatedAt:now};
+  if(nextStage==="PHASE2_OPEN")entry.phase2StartedAt=now;
+  if(nextStage==="MATERIAL_WINDOW")entry.materialOpenedAt=now;
+  if(nextStage==="PHASE3_OPEN")entry.phase3StartedAt=now;
+  if(nextStage==="CLOSED")entry.closedAt=now;
+  const classStages={...a.classStages,[cls]:entry};
+  const allClosed=a.targetClasses.length>0&&a.targetClasses.every(c=>String(classStages?.[c]?.stage)==="CLOSED");
+  const status=allClosed?"CLOSED":"ACTIVE";
+  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
+  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
+  const batch=firebase.fsMod.writeBatch(db);
+  batch.set(privateRef,{classStages,status,updatedAt:now.toISOString()},{merge:true});
+  batch.set(publicRef,{classStages,status,updatedAt:firebase.fsMod.serverTimestamp()},{merge:true});
+  await commitAssessmentBatch_(batch,`${cls}반 단계 전환`);
+  return {...a,classStages,status,updatedAt:now.toISOString()};
+}
+
 
 export async function setAssessmentStatus(assessmentId,status,assessmentSnapshot=null){
   requireAssessmentCloud();

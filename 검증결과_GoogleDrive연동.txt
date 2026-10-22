@@ -1,0 +1,34 @@
+JCOUP 수행평가2 Google Drive 연동 정적 검증 결과
+관리자 v3.5.1 / 학생 v1.8.1 / GAS Bridge v1.0.0
+
+[PASS] 관리자 js/app.js node --check
+[PASS] 관리자 js/db.js node --check
+[PASS] 관리자 js/project-data.js node --check
+[PASS] 관리자 js/drive-bridge-config.js node --check
+[PASS] 학생 js/app.js node --check
+[PASS] 학생 js/portal-config.js node --check
+[PASS] 학생 js/drive-bridge-config.js node --check
+[PASS] GAS Code.gs를 JavaScript로 복사한 node --check
+[PASS] 관리자/학생 코드에서 firebase-storage SDK import 제거
+[PASS] 학생 코드에서 uploadBytes/deleteObject/getBytes 제거
+[PASS] 관리자 코드에서 getAssessmentFileBytes 제거
+[PASS] 추가자료 메타데이터 storagePath → driveFileId 방식 전환
+[PASS] Firebase Storage Rules 배포 불필요
+[PASS] 기존 firestore.rules의 MATERIAL_WINDOW extraMaterials update 허용 키와 GAS PATCH 필드 일치
+[PASS] 학생 업로드 서버단 PDF 헤더 재검사
+[PASS] 학생 업로드 서버단 용량/개수 재검사
+[PASS] Firebase ID Token + session + classStages + attempt 소유권 재확인 구조
+[PASS] 학생 업로드/삭제 MATERIAL_WINDOW 제한
+[PASS] 학생 열람 MATERIAL_WINDOW / PHASE3_OPEN 제한
+[PASS] 관리자 열람 ownerUid 확인
+[PASS] Drive 원본 비공개 저장(공유 링크 생성 코드 없음)
+[PASS] PDF.js canvas viewer로 링크/annotation layer 미생성
+[PASS] 교체 시 새 파일+Firestore 저장 성공 후 이전 Drive 파일 휴지통 처리
+[PASS] 삭제 시 Firestore 목록 제거 후 Drive 파일 휴지통 처리
+
+[NOT RUN] 실제 교사 Google 계정에서 GAS 웹 앱 배포/권한 승인
+[NOT RUN] 실제 doktogul-progress Firestore + GAS + Drive 통합 업로드 테스트
+[NOT RUN] 실제 GitHub Pages 배포 후 브라우저 테스트
+[NOT RUN] 90명 동시 업로드 부하 테스트
+
+정식 평가 전 테스트 학생 1명으로 전체 흐름 스모크 테스트가 필요합니다.

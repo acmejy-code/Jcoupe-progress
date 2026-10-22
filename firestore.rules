@@ -2,90 +2,65 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function courseOwner(courseId) { return get(/databases/$(database)/documents/publicCourses/$(courseId)).data.ownerUid; }
+    function isCourseOwner(courseId) { return signedIn() && request.auth.uid == courseOwner(courseId); }
+    function privateAssessment(courseId, assessmentId) { return get(/databases/$(database)/documents/users/$(courseOwner(courseId))/courseProjects/$(courseId)/assessments/$(assessmentId)).data; }
+    function privateStudent(courseId, studentId) { return get(/databases/$(database)/documents/users/$(courseOwner(courseId))/courseProjects/$(courseId)/students/$(studentId)).data; }
+    function hasValidSession(courseId, assessmentId) { return signedIn() && exists(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/sessions/$(request.auth.uid)); }
+    function sessionData(courseId, assessmentId) { return get(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/sessions/$(request.auth.uid)).data; }
+    function attemptData(courseId, assessmentId, studentId) { return get(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/attempts/$(studentId)).data; }
+    function isTwoStage(courseId, assessmentId) { return privateAssessment(courseId, assessmentId).mode == 'ARGUMENT_TWO_STAGE'; }
+    function twoStageSessionClass(courseId, assessmentId) { return sessionData(courseId, assessmentId).className; }
+    function twoStageStage(courseId, assessmentId) { return privateAssessment(courseId, assessmentId).classStages[twoStageSessionClass(courseId, assessmentId)].stage; }
+    function twoStageSessionMatchesStage(courseId, assessmentId) { return sessionData(courseId, assessmentId).purpose == twoStageStage(courseId, assessmentId); }
+    function twoStageRequestedClass(courseId, assessmentId) { return request.resource.data.className; }
+    function requestedTwoStage(courseId, assessmentId) { return privateAssessment(courseId, assessmentId).classStages[twoStageRequestedClass(courseId, assessmentId)].stage; }
 
-    function signedIn() {
-      return request.auth != null;
-    }
-
-    function courseOwner(courseId) {
-      return get(/databases/$(database)/documents/publicCourses/$(courseId)).data.ownerUid;
-    }
-
-    function isCourseOwner(courseId) {
-      return signedIn() && request.auth.uid == courseOwner(courseId);
-    }
-
-    function privateAssessment(courseId, assessmentId) {
-      return get(/databases/$(database)/documents/users/$(courseOwner(courseId))/courseProjects/$(courseId)/assessments/$(assessmentId)).data;
-    }
-
-    function privateStudent(courseId, studentId) {
-      return get(/databases/$(database)/documents/users/$(courseOwner(courseId))/courseProjects/$(courseId)/students/$(studentId)).data;
-    }
-
-    function hasValidSession(courseId, assessmentId) {
-      return signedIn()
-        && exists(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/sessions/$(request.auth.uid));
-    }
-
-    function sessionData(courseId, assessmentId) {
-      return get(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/sessions/$(request.auth.uid)).data;
-    }
-
-    function attemptData(courseId, assessmentId, studentId) {
-      return get(/databases/$(database)/documents/publicCourses/$(courseId)/assessments/$(assessmentId)/attempts/$(studentId)).data;
-    }
-
-    // 관리자 원본 데이터: 로그인한 사용자는 자신의 데이터만 읽고 쓸 수 있습니다.
     match /users/{userId}/{document=**} {
       allow read, write: if signedIn() && request.auth.uid == userId;
     }
 
-    // 학생용 공개 데이터: 진도 + 수업 자료 + 수행평가 공개 메타데이터.
     match /publicCourses/{courseId} {
       allow read: if true;
-      allow create: if signedIn()
-                    && request.resource.data.ownerUid == request.auth.uid;
-      allow update: if signedIn()
-                    && resource.data.ownerUid == request.auth.uid
-                    && request.resource.data.ownerUid == resource.data.ownerUid;
-      allow delete: if signedIn()
-                    && resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if signedIn() && resource.data.ownerUid == request.auth.uid && request.resource.data.ownerUid == resource.data.ownerUid;
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
 
       match /classes/{classId} {
         allow read: if true;
         allow create, update, delete: if isCourseOwner(courseId);
       }
-
       match /materials/{materialId} {
         allow read: if true;
         allow create, update, delete: if isCourseOwner(courseId);
       }
-
-      // 학생 포털 공지. 공개 컬렉션에는 학생에게 보여 줄 내용과 첨부파일 메타데이터만 둡니다.
       match /notices/{noticeId} {
         allow read: if true;
         allow create, update, delete: if isCourseOwner(courseId);
       }
 
-      // 수행평가 목록에는 제목·상태·대상 반 등 공개 메타데이터만 둡니다.
       match /assessments/{assessmentId} {
         allow read: if true;
         allow create, update, delete: if isCourseOwner(courseId);
 
-        // 문항 본문은 응시코드 검증을 통과해 세션이 만들어진 학생만 읽습니다.
         match /content/{contentId} {
           allow read: if isCourseOwner(courseId)
                       || (hasValidSession(courseId, assessmentId)
-                          && privateAssessment(courseId, assessmentId).status == 'OPEN'
-                          && attemptData(courseId, assessmentId, sessionData(courseId, assessmentId).studentId).authUid == request.auth.uid);
+                          && (
+                            (isTwoStage(courseId, assessmentId)
+                             && twoStageSessionMatchesStage(courseId, assessmentId)
+                             && twoStageStage(courseId, assessmentId) in ['PHASE2_OPEN','MATERIAL_WINDOW','PHASE3_OPEN'])
+                            ||
+                            (!isTwoStage(courseId, assessmentId)
+                             && privateAssessment(courseId, assessmentId).status == 'OPEN'
+                             && attemptData(courseId, assessmentId, sessionData(courseId, assessmentId).studentId).authUid == request.auth.uid)
+                          ));
           allow create, update, delete: if isCourseOwner(courseId);
         }
 
-        // 학생의 익명 Firebase 계정별 인증 세션.
         match /sessions/{sessionId} {
-          allow read: if isCourseOwner(courseId)
-                      || (signedIn() && sessionId == request.auth.uid);
+          allow read: if isCourseOwner(courseId) || (signedIn() && sessionId == request.auth.uid);
 
           allow create: if signedIn()
                         && sessionId == request.auth.uid
@@ -93,13 +68,29 @@ service cloud.firestore {
                         && request.resource.data.studentId is string
                         && request.resource.data.studentName is string
                         && request.resource.data.nameKey is string
-                        && request.resource.data.accessCodeProof is string
-                        && privateAssessment(courseId, assessmentId).status in ['WAITING', 'OPEN']
-                        && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode
-                        && request.resource.data.nameKey == privateStudent(courseId, request.resource.data.studentId).nameKey
-                        && privateAssessment(courseId, assessmentId).targetClasses.hasAny([
-                             privateStudent(courseId, request.resource.data.studentId).className
-                           ]);
+                        && (
+                          (!isTwoStage(courseId, assessmentId)
+                           && request.resource.data.accessCodeProof is string
+                           && privateAssessment(courseId, assessmentId).status in ['WAITING','OPEN']
+                           && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode
+                           && request.resource.data.nameKey == privateStudent(courseId, request.resource.data.studentId).nameKey
+                           && privateAssessment(courseId, assessmentId).targetClasses.hasAny([privateStudent(courseId, request.resource.data.studentId).className]))
+                          ||
+                          (isTwoStage(courseId, assessmentId)
+                           && request.resource.data.className is string
+                           && request.resource.data.className == privateStudent(courseId, request.resource.data.studentId).className
+                           && request.resource.data.nameKey == privateStudent(courseId, request.resource.data.studentId).nameKey
+                           && request.resource.data.purpose == requestedTwoStage(courseId, assessmentId)
+                           && privateAssessment(courseId, assessmentId).targetClasses.hasAny([request.resource.data.className])
+                           && (
+                             (requestedTwoStage(courseId, assessmentId) in ['PHASE2_OPEN','PHASE3_OPEN']
+                              && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode)
+                             ||
+                             (requestedTwoStage(courseId, assessmentId) == 'MATERIAL_WINDOW'
+                              && request.resource.data.phase2Submitted == true
+                              && attemptData(courseId, assessmentId, request.resource.data.studentId).phase2Status == 'SUBMITTED')
+                           ))
+                        );
 
           allow update: if isCourseOwner(courseId)
                         || (signedIn()
@@ -108,21 +99,34 @@ service cloud.firestore {
                             && request.resource.data.authUid == resource.data.authUid
                             && request.resource.data.studentId == resource.data.studentId
                             && request.resource.data.nameKey == resource.data.nameKey
-                            && request.resource.data.accessCodeProof == resource.data.accessCodeProof);
-
-          allow delete: if isCourseOwner(courseId)
-                        || (signedIn() && sessionId == request.auth.uid);
+                            && (
+                              (!isTwoStage(courseId, assessmentId)
+                               && request.resource.data.accessCodeProof == resource.data.accessCodeProof)
+                              ||
+                              (isTwoStage(courseId, assessmentId)
+                               && request.resource.data.className == resource.data.className
+                               && privateAssessment(courseId, assessmentId).targetClasses.hasAny([resource.data.className])
+                               && request.resource.data.purpose == privateAssessment(courseId, assessmentId).classStages[resource.data.className].stage
+                               && (
+                                 (privateAssessment(courseId, assessmentId).classStages[resource.data.className].stage in ['PHASE2_OPEN','PHASE3_OPEN']
+                                  && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode)
+                                 ||
+                                 (privateAssessment(courseId, assessmentId).classStages[resource.data.className].stage == 'MATERIAL_WINDOW'
+                                  && request.resource.data.phase2Submitted == true
+                                  && attemptData(courseId, assessmentId, resource.data.studentId).phase2Status == 'SUBMITTED')
+                               ))
+                            ));
+          allow delete: if isCourseOwner(courseId) || (signedIn() && sessionId == request.auth.uid);
         }
 
-        // 실제 답안. 교사는 전체를 읽고, 학생은 검증된 자기 세션의 학번 문서만 읽고 씁니다.
         match /attempts/{studentId} {
-          // 대기실에서는 동일 학생의 새 기기가 기존 WAITING 문서를 읽고 '기기 인계'할 수 있음.
-          // 시험 시작 후에는 현재 authUid를 소유한 기기만 답안/문항에 접근.
           allow read: if isCourseOwner(courseId)
                       || (hasValidSession(courseId, assessmentId)
                           && sessionData(courseId, assessmentId).studentId == studentId
                           && (
-                            privateAssessment(courseId, assessmentId).status == 'WAITING'
+                            (isTwoStage(courseId, assessmentId)
+                             && twoStageSessionMatchesStage(courseId, assessmentId))
+                            || privateAssessment(courseId, assessmentId).status == 'WAITING'
                             || resource.data.authUid == request.auth.uid
                           ));
 
@@ -132,36 +136,57 @@ service cloud.firestore {
                             && request.resource.data.studentId == studentId
                             && request.resource.data.authUid == request.auth.uid
                             && (
-                              (privateAssessment(courseId, assessmentId).status == 'WAITING'
-                               && request.resource.data.status == 'WAITING')
+                              (!isTwoStage(courseId, assessmentId)
+                               && ((privateAssessment(courseId, assessmentId).status == 'WAITING' && request.resource.data.status == 'WAITING')
+                                   || (privateAssessment(courseId, assessmentId).status == 'OPEN' && request.resource.data.status == 'IN_PROGRESS')))
                               ||
-                              (privateAssessment(courseId, assessmentId).status == 'OPEN'
-                               && request.resource.data.status == 'IN_PROGRESS')
+                              (isTwoStage(courseId, assessmentId)
+                               && twoStageSessionMatchesStage(courseId, assessmentId)
+                               && twoStageStage(courseId, assessmentId) == 'PHASE2_OPEN'
+                               && request.resource.data.className == twoStageSessionClass(courseId, assessmentId)
+                               && request.resource.data.phase2Status == 'IN_PROGRESS')
                             ));
 
           allow update: if isCourseOwner(courseId)
                         || (hasValidSession(courseId, assessmentId)
                             && sessionData(courseId, assessmentId).studentId == studentId
-                            && resource.data.status != 'SUBMITTED'
                             && request.resource.data.studentId == resource.data.studentId
+                            && request.resource.data.authUid == resource.data.authUid
                             && (
-                              // WAITING 상태에서는 새 기기가 자기 authUid로 문서를 인계할 수 있음.
-                              (resource.data.status == 'WAITING'
-                               && privateAssessment(courseId, assessmentId).status == 'WAITING'
-                               && request.resource.data.status == 'WAITING'
-                               && request.resource.data.authUid == request.auth.uid)
+                              (!isTwoStage(courseId, assessmentId)
+                               && resource.data.status != 'SUBMITTED'
+                               && ((resource.data.status == 'WAITING'
+                                    && privateAssessment(courseId, assessmentId).status == 'WAITING'
+                                    && request.resource.data.status == 'WAITING'
+                                    && request.resource.data.authUid == request.auth.uid)
+                                   || (resource.data.status == 'WAITING'
+                                       && privateAssessment(courseId, assessmentId).status == 'OPEN'
+                                       && request.resource.data.status == 'IN_PROGRESS'
+                                       && request.resource.data.authUid == request.auth.uid)
+                                   || (resource.data.status == 'IN_PROGRESS'
+                                       && resource.data.authUid == request.auth.uid
+                                       && request.resource.data.authUid == request.auth.uid
+                                       && request.resource.data.status in ['IN_PROGRESS','SUBMITTED'])))
                               ||
-                              // 시험 시작 순간에도 현재 대기 기기가 자기 authUid로 IN_PROGRESS 전환.
-                              (resource.data.status == 'WAITING'
-                               && privateAssessment(courseId, assessmentId).status == 'OPEN'
-                               && request.resource.data.status == 'IN_PROGRESS'
-                               && request.resource.data.authUid == request.auth.uid)
-                              ||
-                              // 시험 시작 후에는 기기 소유권을 고정.
-                              (resource.data.status == 'IN_PROGRESS'
-                               && resource.data.authUid == request.auth.uid
-                               && request.resource.data.authUid == request.auth.uid
-                               && request.resource.data.status in ['IN_PROGRESS', 'SUBMITTED'])
+                              (isTwoStage(courseId, assessmentId)
+                               && twoStageSessionMatchesStage(courseId, assessmentId)
+                               && resource.data.className == twoStageSessionClass(courseId, assessmentId)
+                               && request.resource.data.className == resource.data.className
+                               && (
+                                 (twoStageStage(courseId, assessmentId) == 'PHASE2_OPEN'
+                                  && resource.data.phase2Status != 'SUBMITTED'
+                                  && request.resource.data.phase2Status in ['IN_PROGRESS','SUBMITTED']
+                                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phase2','phase2Status','phase2SubmittedAt','phase2LastSavedAt','lastSeenAt','updatedAt']))
+                                 ||
+                                 (twoStageStage(courseId, assessmentId) == 'MATERIAL_WINDOW'
+                                  && resource.data.phase2Status == 'SUBMITTED'
+                                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['extraMaterials','extraMaterialsUpdatedAt','lastSeenAt','updatedAt']))
+                                 ||
+                                 (twoStageStage(courseId, assessmentId) == 'PHASE3_OPEN'
+                                  && resource.data.phase2Status == 'SUBMITTED'
+                                  && request.resource.data.phase3Status in ['IN_PROGRESS','SUBMITTED']
+                                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phase3Status','phase3Essay','phase3StartedAt','phase3SubmittedAt','phase3LastSavedAt','phase3EventLog','phase3FocusLossCount','phase3PasteCount','phase3CopyCount','lastSeenAt','updatedAt']))
+                               ))
                             ));
 
           allow delete: if isCourseOwner(courseId);

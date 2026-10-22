@@ -1,4 +1,5 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.4.0";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.1";
+import { DRIVE_BRIDGE_CONFIG, isDriveBridgeConfigured } from "./drive-bridge-config.js?v=3.5.1";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -9,8 +10,9 @@ import {
   replaceStudentsForClass, saveSeatLayout, upsertAssessment, setAssessmentStatus, deleteAssessment,
   watchAssessmentAttempts, resetAssessmentRun, setAssessmentDuration, extendAssessmentTime, extendAssessmentStudentTime,
   reopenAssessmentAttempt,
-  closeAssessmentStatusOnly, closeAssessmentImmediate, setAssessmentStatusVerified, getAssessmentRecoverySnapshots
-} from "./db.js?v=3.4.0";
+  closeAssessmentStatusOnly, closeAssessmentImmediate, setAssessmentStatusVerified, getAssessmentRecoverySnapshots,
+  setTwoStageClassStage
+} from "./db.js?v=3.5.1";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -899,7 +901,7 @@ function statusInfo(studentId){
   return {key:"IN_PROGRESS",label:"응시중",sub:a.lastSavedAt?`저장 ${fmtDateTime(a.lastSavedAt)}`:"접속 확인"};
 }
 
-function assessmentStatusLabel(v){return v==="WAITING"?"입장 대기":v==="OPEN"?"응시 중":v==="CLOSED"?"종료":"준비";}
+function assessmentStatusLabel(v){return v==="WAITING"?"입장 대기":v==="OPEN"?"응시 중":v==="ACTIVE"?"단계 운영 중":v==="CLOSED"?"종료":"준비";}
 function patchAssessmentLocal(id,patch){
   const key=String(id||"");
   assessments=assessments.map(a=>String(a.id)===key?{...a,...patch}:a);
@@ -912,13 +914,76 @@ function removeAssessmentLocal(id){
 function assessmentClientFingerprint(a){
   const classes=(Array.isArray(a?.targetClasses)?a.targetClasses:[]).map(String).sort().join("|");
   const qCount=Array.isArray(a?.questions)?a.questions.length:Number(a?.questionCount||0);
-  return [String(a?.title||"").trim(),classes,Number(a?.durationMinutes||0),qCount].join("::");
+  return [String(a?.mode||"EXAM"),String(a?.title||"").trim(),classes,Number(a?.durationMinutes||0),qCount].join("::");
 }
 function assessmentShortId(a){const id=String(a?.id||"");return id?`#${id.slice(-8).toUpperCase()}`:"#-";}
 function fmtDateTime(v){
   if(!v)return "-"; try{const d=v?.toDate?v.toDate():new Date(v);if(Number.isNaN(d.getTime()))return "-";return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;}catch{return "-";}
 }
 function generateAccessCode(){return Math.random().toString(36).slice(2,8).toUpperCase();}
+
+const TWO_STAGE_MODE="ARGUMENT_TWO_STAGE";
+const TWO_STAGE_STAGE_LABELS={PHASE2_READY:"2차시 준비",PHASE2_OPEN:"2차시 진행",MATERIAL_WINDOW:"추가자료 등록",PHASE3_OPEN:"3차시 진행",CLOSED:"완료"};
+const DEFAULT_TWO_STAGE_TOPICS=[
+  {id:"nietzsche",title:"니체 - 삶의 긍정·힘에의 의지·아곤",propositions:[
+    "경쟁은 개인의 성장에 필요한가?",
+    "실패·고통·역경은 인간의 성장에 필요한가?",
+    "개인은 사회의 공통된 가치보다 스스로 선택한 가치를 우선해야 하는가?"
+  ]},
+  {id:"history",title:"역사학 - 객관성·주관성·언어적 전환",propositions:[
+    "역사 서술에서는 객관적 사실의 확인을 다양한 해석보다 우선해야 하는가?",
+    "역사 연구에서 문헌 중심의 사료 범위를 그림·낙서·조각·의복 등 비문헌 자료까지 적극적으로 확대해야 하는가?",
+    "오늘날의 가치와 관점으로 과거의 사건·인물을 재평가하는 것은 타당한가?"
+  ]},
+  {id:"lease",title:"주택임대차보호법",propositions:[
+    "임차인 보호를 위해 임대인의 재산권을 더 제한할 수 있는가?",
+    "임차인의 권리 보호를 위해 대항력·우선변제권 취득 요건을 완화해야 하는가?",
+    "소액임차인 등 사회적 약자에게 선순위 권리자보다 우선하는 보호를 확대해야 하는가?"
+  ]},
+  {id:"monopoly",title:"독점기업·공정거래법",propositions:[
+    "시장 지배적 기업에 대한 규제를 강화해야 하는가?",
+    "소비자에게 낮은 가격을 제공하더라도 경쟁자를 배제할 가능성이 있는 가격 전략은 규제해야 하는가?",
+    "담합은 실행되지 않았더라도 경쟁 제한 합의만으로 제재해야 하는가?"
+  ]},
+  {id:"str",title:"STR 반복서열 개인식별",propositions:[
+    "범죄 수사를 위해 국가의 DNA 데이터베이스 수집 범위를 확대해야 하는가?",
+    "형사사건에서 STR 분석에 따른 DNA 일치 결과에 높은 증거 가치를 부여해야 하는가?",
+    "중대한 형사사건의 DNA 분석 결과는 별도의 독립적 재검증을 의무화해야 하는가?"
+  ]},
+  {id:"nwp",title:"수치예보 모델 - 격자·분해능",propositions:[
+    "기상재해 대응을 위해 고해상도 수치예보 모델에 대한 투자를 확대해야 하는가?",
+    "기상 예측 정확도 향상에서는 슈퍼컴퓨터·분해능 향상보다 관측자료 개선을 우선해야 하는가?",
+    "지역 기상재해 대응을 위해 전지구 모델보다 고해상도 지역 모델 개발에 더 투자해야 하는가?"
+  ]}
+];
+function defaultTwoStageTopics(){return DEFAULT_TWO_STAGE_TOPICS.map(t=>({id:t.id,title:t.title,propositions:t.propositions.map((text,i)=>({id:`p${i+1}`,text})),teacherMaterials:[]}));}
+function teacherMaterialsText(items){return (items||[]).map(m=>`${m.title||"자료"} | ${m.url||""}`).join("\n");}
+function parseTeacherMaterials(text){return String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map((line,i)=>{const pos=line.indexOf("|");return pos>=0?{id:`m${i+1}`,title:line.slice(0,pos).trim()||`자료 ${i+1}`,url:line.slice(pos+1).trim()}:{id:`m${i+1}`,title:`자료 ${i+1}`,url:line};}).filter(x=>x.url);}
+function isFixedTeacherMaterialUrl(raw){
+  const url=String(raw||"").trim();if(!/^https:\/\//i.test(url))return false;
+  return /drive\.google\.com\/(?:file\/d\/|open\?id=)/i.test(url)||/\.pdf(?:$|[?#])/i.test(url)||/(?:firebasestorage\.googleapis\.com|storage\.googleapis\.com)/i.test(url);
+}
+function renderTwoStageTopicEditor(topics){
+  const root=$("twoStageTopicEditor");if(!root)return;
+  const rows=(topics?.length?topics:defaultTwoStageTopics());
+  root.innerHTML=rows.map((t,i)=>`<section class="two-stage-topic-card" data-two-topic-index="${i}" data-two-topic-id="${esc(t.id||`topic${i+1}`)}"><div class="two-stage-topic-head"><b>${i+1}. 지문·논제 세트</b><span>학생은 이 중 1개 세트를 선택합니다.</span></div><label>지문명<input class="two-topic-title" value="${esc(t.title||"")}"></label>${[0,1,2].map(j=>`<label>논제 ${j+1}<textarea class="two-topic-prop" data-prop-index="${j}" rows="2">${esc(t.propositions?.[j]?.text||t.propositions?.[j]||"")}</textarea></label>`).join("")}<label>교사 제공 자료 <small>한 줄에 ‘자료명 | URL’</small><textarea class="two-topic-materials" rows="3" placeholder="원지문 PDF | https://...\n보조자료 | https://...">${esc(teacherMaterialsText(t.teacherMaterials))}</textarea></label></section>`).join("");
+}
+function collectTwoStageTopics(){
+  return [...document.querySelectorAll("[data-two-topic-index]")].map((card,i)=>({id:card.dataset.twoTopicId||`topic${i+1}`,title:card.querySelector(".two-topic-title")?.value.trim()||"",propositions:[...card.querySelectorAll(".two-topic-prop")].map((el,j)=>({id:`p${j+1}`,text:el.value.trim()})),teacherMaterials:parseTeacherMaterials(card.querySelector(".two-topic-materials")?.value||"")})).filter(t=>t.title);
+}
+function updateAssessmentModeFields(){
+  const two=$("assessmentMode")?.value===TWO_STAGE_MODE;
+  $("twoStageConfig")?.classList.toggle("hidden",!two);
+  $("legacyAssessmentDurationField")?.classList.toggle("hidden",two);
+  $("legacyAssessmentQuestionField")?.classList.toggle("hidden",two);
+}
+function twoStageClassEntry(a,cls){return a?.classStages?.[cls]||{stage:"PHASE2_READY"};}
+function twoStageStageLabel(stage){return TWO_STAGE_STAGE_LABELS[String(stage||"")]||String(stage||"준비");}
+function twoStageClassCounts(a,cls){
+  const roster=classStudents(cls),ids=new Set(roster.map(s=>String(s.studentId)));
+  const rows=assessmentAttempts.filter(at=>ids.has(String(at.studentId||at.id)));
+  return {total:roster.length,phase2Submitted:rows.filter(x=>x.phase2Status==="SUBMITTED").length,materialUsers:rows.filter(x=>Array.isArray(x.extraMaterials)&&x.extraMaterials.length).length,materialFiles:rows.reduce((n,x)=>n+(Array.isArray(x.extraMaterials)?x.extraMaterials.length:0),0),phase3Submitted:rows.filter(x=>x.phase3Status==="SUBMITTED").length};
+}
 function addQuestionEditor(q={}){
   const wrap=document.createElement("div");wrap.className="question-edit-row";
   wrap.innerHTML=`<div class="question-edit-head"><strong>문항</strong><button type="button" class="icon-btn question-remove">✕</button></div><textarea class="question-prompt" placeholder="문항 내용을 입력하세요.">${esc(q.prompt||"")}</textarea><input class="question-placeholder" placeholder="답안 입력칸 안내(선택)" value="${esc(q.placeholder||"")}"/>`;
@@ -929,35 +994,51 @@ function openAssessmentDialog(a=null){
   if(storageMode()!=="cloud"){alert("수행평가 기능은 Google 로그인 후 사용할 수 있습니다.");return;}
   editingAssessmentId=a?.id||null;
   $("assessmentDialogTitle").textContent=a?"수행평가 수정":"수행평가 만들기";
+  $("assessmentMode").value=a?.mode===TWO_STAGE_MODE?TWO_STAGE_MODE:"EXAM";
   $("assessmentTitle").value=a?.title||"";$("assessmentDescription").value=a?.description||"";$("assessmentInstructions").value=a?.instructions||"";
   $("assessmentAccessCode").value=a?.accessCode||generateAccessCode();$("assessmentDuration").value=a?.durationMinutes||50;
+  $("phase2Duration").value=a?.phase2DurationMinutes||45;$("phase3Duration").value=a?.phase3DurationMinutes||45;$("extraMaterialMaxFiles").value=a?.extraMaterialMaxFiles??3;
   $("assessmentClassChecks").innerHTML=projectClasses().map(c=>`<label><input type="checkbox" value="${esc(c)}" ${(a?.targetClasses||projectClasses()).includes(c)?"checked":""}> ${esc(c)}반</label>`).join("");
   $("assessmentQuestionEditor").innerHTML="";(a?.questions?.length?a.questions:[{}]).forEach(addQuestionEditor);
+  renderTwoStageTopicEditor(a?.topicSets?.length?a.topicSets:defaultTwoStageTopics());
+  updateAssessmentModeFields();
   $("deleteAssessmentBtn").classList.toggle("hidden",!a);$("assessmentDialog").showModal();
 }
 async function saveAssessmentForm(e){
   e.preventDefault();
   if(assessmentSaveInFlight)return;
+  const mode=$("assessmentMode").value===TWO_STAGE_MODE?TWO_STAGE_MODE:"EXAM";
   const questions=[...document.querySelectorAll(".question-edit-row")].map((row,i)=>({id:`q${i+1}`,prompt:row.querySelector(".question-prompt").value.trim(),placeholder:row.querySelector(".question-placeholder").value.trim(),required:true})).filter(q=>q.prompt);
   const targetClasses=[...$("assessmentClassChecks").querySelectorAll("input:checked")].map(x=>x.value);
   const old=editingAssessmentId?assessments.find(x=>x.id===editingAssessmentId):null;
-  const targetId=editingAssessmentId||makeId(); // v3.3.0: 저장 시작 시 ID를 한 번만 생성해 연속 클릭 중복 생성을 막음
-  const draft={...(old||{}),id:targetId,title:$("assessmentTitle").value,description:$("assessmentDescription").value,instructions:$("assessmentInstructions").value,accessCode:$("assessmentAccessCode").value,targetClasses,durationMinutes:Number($("assessmentDuration").value||0),questions,status:old?.status||"DRAFT"};
+  if(old&&old.mode&&old.mode!==mode&&old.status!=="DRAFT"){alert("운영을 시작한 평가는 평가 유형을 변경할 수 없습니다.");return;}
+  const targetId=editingAssessmentId||makeId();
+  const preservedStages={};
+  targetClasses.forEach(cls=>{preservedStages[cls]=old?.classStages?.[cls]||{stage:"PHASE2_READY",phase2StartedAt:null,materialOpenedAt:null,phase3StartedAt:null,closedAt:null};});
+  const draft={...(old||{}),id:targetId,mode,title:$("assessmentTitle").value,description:$("assessmentDescription").value,instructions:$("assessmentInstructions").value,accessCode:$("assessmentAccessCode").value,targetClasses,durationMinutes:Number($("assessmentDuration").value||0),questions,status:old?.status||"DRAFT"};
+  if(mode===TWO_STAGE_MODE){
+    draft.phase2DurationMinutes=Number($("phase2Duration").value||45);
+    draft.phase3DurationMinutes=Number($("phase3Duration").value||45);
+    draft.extraMaterialMaxFiles=Number($("extraMaterialMaxFiles").value||3);
+    draft.extraMaterialMaxBytes=5*1024*1024;
+    draft.topicSets=collectTwoStageTopics();
+    const invalidTeacherMaterials=draft.topicSets.flatMap(t=>(t.teacherMaterials||[]).filter(m=>!isFixedTeacherMaterialUrl(m.url)).map(m=>`${t.title} · ${m.title}`));
+    if(invalidTeacherMaterials.length){alert(`교사 제공 자료는 3차시 자료 통제를 위해 Google Drive의 PDF 파일 링크 또는 직접 PDF 링크만 등록해 주세요.\n\n확인 필요: ${invalidTeacherMaterials.slice(0,5).join(", ")}`);return;}
+    draft.classStages=preservedStages;
+    draft.questions=[];
+    if(!draft.instructions.trim())draft.instructions="2차시는 자료를 읽고 논제를 선택하여 사고 과정을 기록합니다. 2차시 제출 후 3차시 시작 전까지 추가자료 PDF를 등록할 수 있으며, 3차시에는 허용된 자료만 확인하며 최종 입론서를 작성합니다.";
+  }
   if(!editingAssessmentId){
     const fp=assessmentClientFingerprint(draft);
     const same=assessments.filter(a=>assessmentClientFingerprint(a)===fp);
-    if(same.length&&!confirm(`같은 제목·대상 반·시험시간·문항 수의 평가가 이미 ${same.length}개 있습니다.\n\n기존 평가를 수정하려는 것이 아니라 새 평가를 하나 더 만드는 것이 맞습니까?`))return;
+    if(same.length&&!confirm(`같은 조건의 평가가 이미 ${same.length}개 있습니다.\n\n새 평가를 하나 더 만드는 것이 맞습니까?`))return;
   }
-  const submit=$("saveAssessmentBtn");
-  assessmentSaveInFlight=true;
-  if(submit){submit.disabled=true;submit.textContent="저장 중…";}
+  const submit=$("saveAssessmentBtn");assessmentSaveInFlight=true;if(submit){submit.disabled=true;submit.textContent="저장 중…";}
   try{
-    const saved=await upsertAssessment(draft);
-    selectedAssessmentId=saved.id;$("assessmentDialog").close();toast(`수행평가를 저장했습니다. (${assessmentShortId(saved)})`);
+    const saved=await upsertAssessment(draft);selectedAssessmentId=saved.id;$("assessmentDialog").close();toast(`${mode===TWO_STAGE_MODE?"2단계형 수행평가":"수행평가"}를 저장했습니다. (${assessmentShortId(saved)})`);
   }catch(err){alert("수행평가 저장 실패: "+err.message);}
   finally{assessmentSaveInFlight=false;if(submit){submit.disabled=false;submit.textContent="저장";}}
 }
-
 function setRosterTab(name){
   document.querySelectorAll("[data-roster-tab]").forEach(b=>b.classList.toggle("active",b.dataset.rosterTab===name));
   ["list","seat"].forEach(k=>$("rosterTab-"+k)?.classList.toggle("active",k===name));
@@ -1206,6 +1287,7 @@ function openMonitorControl(studentId){
 }
 function renderAssessmentMonitor(){
   const root=$("assessmentMonitor");if(!root)return;const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a){root.innerHTML="";return;}
+  if(a.mode===TWO_STAGE_MODE){renderTwoStageMonitor();return;}
   const cls=selectedMonitorClass||a.targetClasses?.[0]||projectClasses()[0]||"";selectedMonitorClass=cls;
   const layout=getSeatLayout(cls),depth=seatDepthCount(layout||5),slots=layoutSlotsForClass(cls),cols=seatColumnCount(slots,depth),studentMap=new Map(classStudents(cls).map(s=>[String(s.studentId),s]));
   const rows=slots.filter(Boolean).map(id=>studentMap.get(String(id))).filter(Boolean);
@@ -1227,7 +1309,7 @@ function renderAssessmentMonitor(){
       ${events?`<small class="seat-integrity">${esc(events)}</small>`:""}
     </div>`;
   }).join("");
-  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">대기실 입장 학생은 문항을 볼 수 없습니다. 시험 시작 후 heartbeat는 약 60초 주기입니다. 마지막 신호 75초 이내는 정상, 75초 초과는 지연, 150초 초과 무응답일 때만 접속 이상으로 표시합니다.</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>대기 ${count("WAITING")}</span><span>대기실 나감 ${count("WAITING_LEFT")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>지연 ${count("WARNING")}</span><span>제출 ${count("SUBMITTED")}</span><span>확정대기 ${count("EXPIRED_PENDING")}</span><span>접속이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-room-layout">${leftMarker}<div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr));grid-template-rows:repeat(${depth},auto)">${seatHtml}</div>${rightMarker}</div><div class="seat-tools"><span class="small muted">카드의 ⋯ 버튼에서 개인 추가시간과 재응시를 허용할 수 있습니다. 화면 이탈·복사·붙여넣기는 감독 참고용입니다. 학생용 v1.7.0부터 3초 이상 화면 숨김과 실제 copy/paste만 기록하며 자동으로 부정행위로 확정하지 않습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
+  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 실시간 좌석 감독</h3><div class="small muted">대기실 입장 학생은 문항을 볼 수 없습니다. 시험 시작 후 heartbeat는 약 60초 주기입니다. 마지막 신호 75초 이내는 정상, 75초 초과는 지연, 150초 초과 무응답일 때만 접속 이상으로 표시합니다.</div></div><div class="monitor-summary"><span>미접속 ${count("NONE")}</span><span>대기 ${count("WAITING")}</span><span>대기실 나감 ${count("WAITING_LEFT")}</span><span>응시중 ${count("IN_PROGRESS")}</span><span>지연 ${count("WARNING")}</span><span>제출 ${count("SUBMITTED")}</span><span>확정대기 ${count("EXPIRED_PENDING")}</span><span>접속이상 ${count("STALE")}</span></div></div><div class="front-label">칠판 · 교탁 (교실 앞)</div><div class="seat-room-layout">${leftMarker}<div class="seat-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr));grid-template-rows:repeat(${depth},auto)">${seatHtml}</div>${rightMarker}</div><div class="seat-tools"><span class="small muted">카드의 ⋯ 버튼에서 개인 추가시간과 재응시를 허용할 수 있습니다. 화면 이탈·복사·붙여넣기는 감독 참고용입니다. 학생용 v1.8.1부터 3초 이상 화면 숨김과 실제 copy/paste만 기록하며 자동으로 부정행위로 확정하지 않습니다.</span><button class="btn small-btn" id="saveSeatOrderBtn">현재 순서 저장</button></div>`;
   let dragIndex=null;
   root.querySelectorAll("[data-monitor-slot]").forEach(slot=>{slot.ondragover=e=>e.preventDefault();slot.ondrop=e=>{e.preventDefault();const to=Number(slot.dataset.monitorSlot);if(dragIndex===null||to===dragIndex)return;const tmp=slots[to]??null;slots[to]=slots[dragIndex]??null;slots[dragIndex]=tmp;dragIndex=null;const ids=verticalStudentOrder(slots);saveSeatLayout(cls,depth,ids,slots).then(()=>toast("좌석 위치를 저장했습니다.")).catch(err=>alert(err.message));};});
   root.querySelectorAll("[data-seat-student]").forEach(card=>{card.ondragstart=e=>{if(e.target.closest?.("[data-monitor-control]")){e.preventDefault();return;}dragIndex=Number(card.dataset.monitorSlot);draggedStudentId=card.dataset.seatStudent};card.ondragend=()=>{dragIndex=null;draggedStudentId=null};});
@@ -1237,6 +1319,7 @@ function renderAssessmentMonitor(){
 
 async function downloadAssessmentCsv(){
   const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a)return;
+  if(a.mode===TWO_STAGE_MODE){downloadTwoStageCsv(a);return;}
   const rosterMap=new Map(students.map(s=>[String(s.studentId),s]));
   let recoveryRows=[];
   try{recoveryRows=await getAssessmentRecoverySnapshots(a.id);}catch(err){console.warn("복구 스냅샷 조회 실패",err);}
@@ -1463,11 +1546,97 @@ async function runExpiredFinalize(){
   await Promise.allSettled(open.map(a=>finalizeOneAssessmentLifecycle(a,now)));
 }
 
+
+function assessmentListHtml(){
+  return assessments.length?assessments.map(a=>{
+    const two=a.mode===TWO_STAGE_MODE;
+    const detail=two?`${esc((a.targetClasses||[]).join("·"))}반 · 2단계 입론서형 · ${esc(assessmentShortId(a))}`:`${esc((a.targetClasses||[]).join("·"))}반 · ${a.questions?.length||0}문항 · ${Number(a.durationMinutes||0)}분 · ${esc(assessmentShortId(a))}`;
+    return `<button class="assessment-row ${a.id===selectedAssessmentId?"active":""}" data-assessment-id="${esc(a.id)}"><span><b>${esc(a.title)}</b><small>${detail}</small></span><em class="assessment-status ${String(a.status).toLowerCase()}">${assessmentStatusLabel(a.status)}</em></button>`;
+  }).join(""):`<div class="empty">아직 만든 수행평가가 없습니다.</div>`;
+}
+function bindAssessmentListCommon(){
+  const listToggle=$("assessmentListToggleBtn");if(listToggle)listToggle.onclick=()=>{assessmentListCollapsed=!assessmentListCollapsed;try{localStorage.setItem(ASSESSMENT_LIST_COLLAPSE_KEY,assessmentListCollapsed?"1":"0");}catch{}renderAssessments();startAttemptWatch();};
+  document.querySelectorAll("[data-assessment-id]").forEach(b=>b.onclick=()=>{closeAccessCodePresentation();closeFloatingExamTimer();selectedAssessmentId=b.dataset.assessmentId;assessmentAttempts=[];const aa=assessments.find(x=>x.id===selectedAssessmentId);selectedMonitorClass=aa?.targetClasses?.[0]||"";renderAssessments();startAttemptWatch();});
+}
+function twoStageActionFor(stage){
+  if(stage==="PHASE2_READY")return {next:"PHASE2_OPEN",label:"2차시 시작",cls:"success-btn"};
+  if(stage==="PHASE2_OPEN")return {next:"MATERIAL_WINDOW",label:"2차시 종료 · 자료등록 열기",cls:""};
+  if(stage==="MATERIAL_WINDOW")return {next:"PHASE3_OPEN",label:"3차시 시작 · 자료 잠금",cls:"success-btn"};
+  if(stage==="PHASE3_OPEN")return {next:"CLOSED",label:"3차시 종료",cls:"danger"};
+  return null;
+}
+async function transitionTwoStageClass(a,cls,nextStage,button){
+  const counts=twoStageClassCounts(a,cls),current=twoStageClassEntry(a,cls).stage;
+  let msg="";
+  if(nextStage==="PHASE2_OPEN")msg=`${cls}반 2차시를 시작할까요?\n\n학생은 학번·이름·응시코드로 입장해 지문·논제 선택 및 사고과정을 작성합니다.`;
+  if(nextStage==="MATERIAL_WINDOW"){
+    const missing=Math.max(0,counts.total-counts.phase2Submitted);
+    msg=`${cls}반 2차시를 종료하고 추가자료 등록기간을 열까요?\n\n2차시 제출 ${counts.phase2Submitted}/${counts.total}명${missing?`\n⚠ 미제출 ${missing}명은 2차시 답안을 더 수정할 수 없습니다.`:""}`;
+  }
+  if(nextStage==="PHASE3_OPEN")msg=`${cls}반 3차시를 시작할까요?\n\n이 순간부터 추가자료 등록·교체·삭제가 잠기며, 학생은 지금까지 등록한 PDF와 교사 제공 자료만 확인할 수 있습니다.\n현재 추가자료 등록: ${counts.materialUsers}명 · ${counts.materialFiles}개`;
+  if(nextStage==="CLOSED"){
+    const missing=Math.max(0,counts.total-counts.phase3Submitted);
+    msg=`${cls}반 3차시를 종료할까요?\n\n최종 제출 ${counts.phase3Submitted}/${counts.total}명${missing?`\n⚠ 미제출 ${missing}명이 있습니다.`:""}`;
+  }
+  if(!confirm(msg))return;
+  if(button){button.disabled=true;button.textContent="반영 중…";}
+  try{
+    const updated=await setTwoStageClassStage(a.id,cls,nextStage,a);
+    patchAssessmentLocal(a.id,{classStages:updated.classStages,status:updated.status});
+    selectedMonitorClass=cls;renderAssessments();startAttemptWatch();toast(`${cls}반 · ${twoStageStageLabel(nextStage)} 상태로 변경했습니다.`);
+  }catch(err){alert(`단계 전환 실패: ${err.message||err}`);}
+  finally{if(button?.isConnected)button.disabled=false;}
+}
+function renderTwoStageAssessments(root,selected){
+  if(!selectedMonitorClass||(selected.targetClasses||[]).indexOf(selectedMonitorClass)<0)selectedMonitorClass=selected.targetClasses?.[0]||"";
+  const cards=(selected.targetClasses||[]).map(cls=>{
+    const entry=twoStageClassEntry(selected,cls),counts=twoStageClassCounts(selected,cls),act=twoStageActionFor(entry.stage);
+    return `<article class="two-stage-class-card ${cls===selectedMonitorClass?"active":""}" data-two-class-select="${esc(cls)}"><div class="two-stage-class-card-head"><div><b>${esc(cls)}반</b><span class="two-stage-stage-badge stage-${String(entry.stage).toLowerCase()}">${esc(twoStageStageLabel(entry.stage))}</span></div>${act?`<button class="btn small-btn ${act.cls}" data-two-transition-class="${esc(cls)}" data-two-transition-next="${esc(act.next)}">${esc(act.label)}</button>`:"<span class=\"small muted\">운영 완료</span>"}</div><div class="two-stage-counts"><span>2차시 제출 <b>${counts.phase2Submitted}/${counts.total}</b></span><span>추가자료 <b>${counts.materialUsers}명 · ${counts.materialFiles}개</b></span><span>3차시 제출 <b>${counts.phase3Submitted}/${counts.total}</b></span></div></article>`;
+  }).join("");
+  root.innerHTML=`<div class="assessment-toolbar"><div><h2>수행평가 응시 관리</h2><div class="small muted">2단계 입론서형은 반별로 2차시 → 추가자료 사전등록 → 3차시를 각각 전환합니다. 반별 시간표가 달라도 서로 영향을 주지 않습니다.</div></div><div class="assessment-actions"><button class="btn" id="manageRosterBtn">학생 명단</button><button class="btn primary" id="newAssessmentBtn">＋ 수행평가 만들기</button></div></div><div class="assessment-layout ${assessmentListCollapsed?"list-collapsed":""}"><div class="assessment-list-panel card"><div class="assessment-list-head"><h3>평가 목록</h3><button type="button" class="assessment-list-toggle" id="assessmentListToggleBtn">${assessmentListCollapsed?"▶":"◀"}</button></div><div class="assessment-list">${assessmentListHtml()}</div></div><div class="assessment-main"><div class="card assessment-control"><div class="assessment-control-head"><div><div class="label">2단계 입론서형</div><h3>${esc(selected.title)}</h3><p>${esc(selected.description||"2차시 사고과정 → 추가자료 등록 → 3차시 최종 입론서")}</p><div class="small muted">평가 ID ${esc(selected.id)} · 2차시 ${Number(selected.phase2DurationMinutes||45)}분 · 3차시 ${Number(selected.phase3DurationMinutes||45)}분 · 추가자료 최대 ${Number(selected.extraMaterialMaxFiles??3)}개</div></div><div class="assessment-control-side"><div class="code-box" id="expandAccessCodeBtn" role="button" tabindex="0"><span>2·3차시 응시코드</span><strong>${esc(selected.accessCode)}</strong></div></div></div><div class="assessment-control-actions"><button class="btn" id="editAssessmentBtn">설정 수정</button><button class="btn" id="exportAssessmentBtn">응답 CSV</button><button class="btn" id="resetAssessmentBtn">테스트 기록 초기화</button><button class="btn danger" id="deleteAssessmentDirectBtn">평가 삭제</button></div><div class="two-stage-class-grid">${cards}</div></div><div id="assessmentMonitor" class="card assessment-monitor"></div></div></div>`;
+  $("manageRosterBtn").onclick=openRosterDialog;$("newAssessmentBtn").onclick=()=>openAssessmentDialog();bindAssessmentListCommon();presentationKeyboardActivate($("expandAccessCodeBtn"),openAccessCodePresentation);$("editAssessmentBtn").onclick=()=>openAssessmentDialog(selected);
+  root.querySelectorAll("[data-two-class-select]").forEach(card=>card.onclick=e=>{if(e.target.closest("[data-two-transition-class]"))return;selectedMonitorClass=card.dataset.twoClassSelect;renderTwoStageMonitor();root.querySelectorAll("[data-two-class-select]").forEach(x=>x.classList.toggle("active",x.dataset.twoClassSelect===selectedMonitorClass));});
+  root.querySelectorAll("[data-two-transition-class]").forEach(btn=>btn.onclick=e=>{e.stopPropagation();transitionTwoStageClass(selected,btn.dataset.twoTransitionClass,btn.dataset.twoTransitionNext,btn);});
+  $("exportAssessmentBtn").onclick=()=>downloadTwoStageCsv(selected);
+  $("resetAssessmentBtn").onclick=async()=>{if(confirm("이 평가의 학생 응시 기록과 인증 세션을 모두 삭제할까요?\n반별 단계 상태는 유지됩니다.")){const n=await resetAssessmentRun(selected.id);assessmentAttempts=[];renderTwoStageMonitor();toast(`${n}개 응시 기록을 초기화했습니다.`);}};
+  $("deleteAssessmentDirectBtn").onclick=async()=>{if(!confirm(`「${selected.title}」 평가를 완전히 삭제할까요?\n학생이 Google Drive에 올린 PDF 원본은 Drive에 남습니다. 평가 삭제 후 필요하면 Drive 폴더도 별도로 정리해 주세요.`))return;try{await deleteAssessment(selected.id);removeAssessmentLocal(selected.id);assessmentAttempts=[];renderAssessments();startAttemptWatch();toast("평가를 삭제했습니다.");}catch(err){alert(err.message);}};
+  renderTwoStageMonitor();
+}
+function renderTwoStageMonitor(){
+  const root=$("assessmentMonitor");if(!root)return;const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a||a.mode!==TWO_STAGE_MODE)return;
+  const cls=selectedMonitorClass||a.targetClasses?.[0]||"",roster=classStudents(cls),map=new Map(assessmentAttempts.map(x=>[String(x.studentId||x.id),x]));
+  const rows=roster.map(st=>{const at=map.get(String(st.studentId)),p2=at?.phase2Status==="SUBMITTED"?"제출":at?.phase2Status==="IN_PROGRESS"?"작성중":"미접속",files=Array.isArray(at?.extraMaterials)?at.extraMaterials:[],p3=at?.phase3Status==="SUBMITTED"?"제출":at?.phase3Status==="IN_PROGRESS"?"작성중":"-",eventLog=Array.isArray(at?.phase3EventLog)?at.phase3EventLog:[],focus=eventLog.filter(e=>e?.type==="FOCUS_LOSS").length||Number(at?.phase3FocusLossCount||0),paste=eventLog.filter(e=>e?.type==="PASTE").length||Number(at?.phase3PasteCount||0),events=[focus?`이탈 ${focus}`:"",paste?`붙여넣기 ${paste}`:""].filter(Boolean).join(" · ");return `<tr><td>${esc(st.studentId)}</td><td>${esc(st.name)}</td><td><span class="progress-pill ${p2==="제출"?"done":p2==="작성중"?"doing":""}">${p2}</span></td><td>${files.length?files.map((f,i)=>`<button class="link-button" data-extra-material-id="${esc(f.id||"")}" data-extra-student-id="${esc(st.studentId)}" data-extra-name="${esc(f.name||`자료${i+1}.pdf`)}">${esc(f.name||`자료${i+1}.pdf`)}</button>`).join("<br>"):"-"}</td><td><span class="progress-pill ${p3==="제출"?"done":p3==="작성중"?"doing":""}">${p3}</span></td><td>${esc(events||"-")}</td></tr>`;}).join("");
+  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 단계별 진행 현황</h3><div class="small muted">2단계형은 60초 heartbeat를 사용하지 않습니다. 학생 입력은 기기에 즉시 저장하고 서버에는 저빈도로 백업하여 Firestore 사용량을 줄입니다.</div></div></div><div class="two-stage-monitor-table-wrap"><table class="two-stage-monitor-table"><thead><tr><th>학번</th><th>이름</th><th>2차시</th><th>추가자료</th><th>3차시</th><th>3차시 감독기록</th></tr></thead><tbody>${rows||`<tr><td colspan="6">등록된 학생이 없습니다.</td></tr>`}</tbody></table></div>`;
+  root.querySelectorAll("[data-extra-material-id]").forEach(b=>b.onclick=()=>previewAssessmentDriveFile(b.dataset.extraStudentId,b.dataset.extraMaterialId,b.dataset.extraName));
+}
+function appendAdminDriveField_(form,name,value){const i=document.createElement("input");i.type="hidden";i.name=name;i.value=String(value??"");form.appendChild(i);}
+async function previewAssessmentDriveFile(studentId,materialId,name){
+  if(!studentId||!materialId)return;
+  if(!isDriveBridgeConfigured()){alert("Google Drive Bridge 주소가 설정되지 않았습니다. js/drive-bridge-config.js에 Apps Script /exec URL을 입력해 주세요.");return;}
+  const user=getCurrentUser();if(!user){alert("Google 로그인 후 사용할 수 있습니다.");return;}
+  try{
+    const token=typeof user.getIdToken==="function"?await user.getIdToken():null;if(!token)throw new Error("Firebase 인증 토큰을 가져올 수 없습니다.");
+    const target=`jcoupAdminDrive_${Date.now()}_${Math.random().toString(36).slice(2)}`,w=window.open("",target,"width=1100,height=900,noopener=no");
+    if(!w){alert("팝업이 차단되었습니다. 이 사이트의 팝업을 허용해 주세요.");return;}
+    try{w.document.write(`<p style="font-family:sans-serif;padding:24px">${esc(name||"PDF")} 불러오는 중…</p>`);}catch{}
+    const form=document.createElement("form");form.method="POST";form.action=DRIVE_BRIDGE_CONFIG.webAppUrl;form.target=target;form.style.display="none";
+    const fields={action:"view",requestId:`admin-view-${Date.now()}`,idToken:token,projectId:getActiveProjectId(),assessmentId:selectedAssessmentId,studentId,materialId,role:"admin"};
+    Object.entries(fields).forEach(([k,v])=>appendAdminDriveField_(form,k,v));document.body.appendChild(form);form.submit();setTimeout(()=>form.remove(),1000);
+  }catch(err){alert(`자료를 열 수 없습니다: ${err.message||err}`);}
+}
+function downloadTwoStageCsv(a){
+  const rosterMap=new Map(students.map(s=>[String(s.studentId),s])),quote=v=>`"${String(v??"").replace(/"/g,'""')}"`;
+  const headers=["학번","이름","반","선택 지문","선택 논제","지문 선택 이유","원지문 연결","쟁점·충돌관점","논제 선택 이유","찬성 근거","반대 근거","입장과 이유","2차시 상태","추가자료 수","3차시 상태","최종 입론서","화면이탈","붙여넣기"];
+  const rows=assessmentAttempts.map(at=>{const st=rosterMap.get(String(at.studentId))||{},p=at.phase2||{},events=Array.isArray(at.phase3EventLog)?at.phase3EventLog:[],focus=events.filter(e=>e?.type==="FOCUS_LOSS").length||Number(at.phase3FocusLossCount||0),paste=events.filter(e=>e?.type==="PASTE").length||Number(at.phase3PasteCount||0);return [at.studentId,st.name||at.studentName||"",st.className||at.className||"",p.topicTitle||"",p.propositionText||"",p.selectionReason||"",p.passageConnection||"",p.conflictAnalysis||"",p.propositionChoiceReason||"",p.proGround||"",p.conGround||"",p.stanceReason||"",at.phase2Status||"",Array.isArray(at.extraMaterials)?at.extraMaterials.length:0,at.phase3Status||"",at.phase3Essay||"",focus,paste];});
+  const csv="\ufeff"+[headers,...rows].map(r=>r.map(quote).join(",")).join("\r\n"),blob=new Blob([csv],{type:"text/csv;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`${a.title||"수행평가2"}_2단계응답.csv`;link.click();URL.revokeObjectURL(url);
+}
+
 function renderAssessments(){
   const root=$("view-assessments");if(!activeProject)return;
   if(storageMode()!=="cloud"){root.innerHTML=`<div class="card assessment-empty"><h2>수행평가 응시 관리</h2><p>학생 인증·실시간 감독·답안 수집은 Firestore를 사용하므로 Google 로그인 후 사용할 수 있습니다.</p></div>`;return;}
   if(!selectedAssessmentId||!assessments.some(a=>a.id===selectedAssessmentId))selectedAssessmentId=assessments[0]?.id||null;
   const selected=assessments.find(a=>a.id===selectedAssessmentId)||null;if(!selectedMonitorClass)selectedMonitorClass=selected?.targetClasses?.[0]||projectClasses()[0]||"";
+  if(selected?.mode===TWO_STAGE_MODE){renderTwoStageAssessments(root,selected);return;}
   const timer=selected?.status==="OPEN"?`<div class="assessment-admin-time" id="expandAssessmentTimerBtn" role="button" tabindex="0" title="클릭하면 큰 시험시간 창을 띄웁니다"><b id="assessmentAdminTimer">남은 시간 계산 중</b><span>시험 ${Number(selected.durationMinutes||0)}분${Number(selected.timeExtensionMinutes||0)?` + 전체 연장 ${Number(selected.timeExtensionMinutes)}분`:""}</span></div>`:"";
   const preStartControls=selected?.status==="DRAFT"
     ?`<button class="btn success-btn" id="openWaitingRoomBtn">학생 입장 열기</button>`
@@ -1630,7 +1799,7 @@ function bind(){
   $("closeProjectDialog").onclick=()=>$("projectDialog").close();$("cancelProjectBtn").onclick=()=>$("projectDialog").close();$("projectForm").onsubmit=saveProjectForm;
   $("closeMaterialDialog").onclick=()=>$("materialDialog").close();$("cancelMaterialBtn").onclick=()=>$("materialDialog").close();$("materialForm").onsubmit=saveMaterialForm;$("deleteMaterialBtn").onclick=deleteEditingMaterial;
   $("closeNoticeDialog").onclick=()=>$("noticeDialog").close();$("cancelNoticeBtn").onclick=()=>$("noticeDialog").close();$("noticeForm").onsubmit=saveNoticeForm;$("addNoticeDriveBtn").onclick=addNoticeDriveAttachment;$("deleteNoticeBtn").onclick=deleteEditingNotice;
-  $("closeAssessmentDialog").onclick=()=>$("assessmentDialog").close();$("cancelAssessmentBtn").onclick=()=>$("assessmentDialog").close();$("assessmentForm").onsubmit=saveAssessmentForm;$("addQuestionBtn").onclick=()=>addQuestionEditor({});$("generateAccessCodeBtn").onclick=()=>$("assessmentAccessCode").value=generateAccessCode();$("deleteAssessmentBtn").onclick=async()=>{if(!editingAssessmentId)return;const target=assessments.find(x=>x.id===editingAssessmentId);if(target?.status==="OPEN"){alert("현재 응시 중인 평가는 평가 종료 후 삭제해 주세요.");return;}if(confirm("이 수행평가를 완전히 삭제할까요?\n응시 기록과 인증 세션도 함께 삭제되며 복구할 수 없습니다.")){try{const deletingId=editingAssessmentId;const r=await deleteAssessment(deletingId);$("assessmentDialog").close();removeAssessmentLocal(deletingId);assessmentAttempts=[];renderAssessments();startAttemptWatch();if(r?.sameFingerprintRemaining>0)alert(`선택한 평가는 서버에서 삭제되었습니다. 다만 동일 조건의 별도 평가 ID가 ${r.sameFingerprintRemaining}개 남아 있습니다.`);else toast("수행평가를 서버에서 삭제 확인했습니다.");}catch(err){alert(err.message);}}};
+  $("closeAssessmentDialog").onclick=()=>$("assessmentDialog").close();$("cancelAssessmentBtn").onclick=()=>$("assessmentDialog").close();$("assessmentForm").onsubmit=saveAssessmentForm;$("addQuestionBtn").onclick=()=>addQuestionEditor({});$("generateAccessCodeBtn").onclick=()=>$("assessmentAccessCode").value=generateAccessCode();$("assessmentMode").onchange=()=>{updateAssessmentModeFields();if($("assessmentMode").value===TWO_STAGE_MODE&&!document.querySelector("[data-two-topic-index]"))renderTwoStageTopicEditor(defaultTwoStageTopics());};$("deleteAssessmentBtn").onclick=async()=>{if(!editingAssessmentId)return;const target=assessments.find(x=>x.id===editingAssessmentId);if(target?.status==="OPEN"){alert("현재 응시 중인 평가는 평가 종료 후 삭제해 주세요.");return;}if(confirm("이 수행평가를 완전히 삭제할까요?\n응시 기록과 인증 세션도 함께 삭제되며 복구할 수 없습니다.")){try{const deletingId=editingAssessmentId;const r=await deleteAssessment(deletingId);$("assessmentDialog").close();removeAssessmentLocal(deletingId);assessmentAttempts=[];renderAssessments();startAttemptWatch();if(r?.sameFingerprintRemaining>0)alert(`선택한 평가는 서버에서 삭제되었습니다. 다만 동일 조건의 별도 평가 ID가 ${r.sameFingerprintRemaining}개 남아 있습니다.`);else toast("수행평가를 서버에서 삭제 확인했습니다.");}catch(err){alert(err.message);}}};
   $("closeMonitorStudentDialog").onclick=()=>$("monitorStudentDialog").close();
   const addStudentMinutes=async minutes=>{if(!monitorControlStudentId)return;const n=Math.max(1,Math.min(120,Math.floor(Number(minutes||0))));if(!Number.isFinite(n))return;await extendAssessmentStudentTime(selectedAssessmentId,monitorControlStudentId,n);toast(`해당 학생에게 ${n}분을 추가했습니다.`);$("monitorStudentDialog").close();};
   $("monitorAdd1Btn").onclick=()=>addStudentMinutes(1);
