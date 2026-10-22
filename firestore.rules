@@ -185,7 +185,7 @@ service cloud.firestore {
                                  (twoStageStage(courseId, assessmentId) == 'PHASE3_OPEN'
                                   && resource.data.phase2Status == 'SUBMITTED'
                                   && request.resource.data.phase3Status in ['IN_PROGRESS','SUBMITTED']
-                                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phase3Status','phase3Essay','phase3StartedAt','phase3SubmittedAt','phase3LastSavedAt','phase3EventLog','phase3FocusLossCount','phase3PasteCount','phase3CopyCount','lastSeenAt','updatedAt']))
+                                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phase3Status','phase3Outline','phase3Essay','phase3StartedAt','phase3SubmittedAt','phase3LastSavedAt','phase3EventLog','phase3FocusLossCount','phase3PasteCount','phase3CopyCount','lastSeenAt','updatedAt']))
                                ))
                             ));
 

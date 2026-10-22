@@ -1,5 +1,5 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.1";
-import { DRIVE_BRIDGE_CONFIG, isDriveBridgeConfigured } from "./drive-bridge-config.js?v=3.5.1";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.2";
+import { DRIVE_BRIDGE_CONFIG, isDriveBridgeConfigured } from "./drive-bridge-config.js?v=3.5.2";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -12,7 +12,7 @@ import {
   reopenAssessmentAttempt,
   closeAssessmentStatusOnly, closeAssessmentImmediate, setAssessmentStatusVerified, getAssessmentRecoverySnapshots,
   setTwoStageClassStage
-} from "./db.js?v=3.5.1";
+} from "./db.js?v=3.5.2";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -1626,8 +1626,8 @@ async function previewAssessmentDriveFile(studentId,materialId,name){
 }
 function downloadTwoStageCsv(a){
   const rosterMap=new Map(students.map(s=>[String(s.studentId),s])),quote=v=>`"${String(v??"").replace(/"/g,'""')}"`;
-  const headers=["학번","이름","반","선택 지문","선택 논제","지문 선택 이유","원지문 연결","쟁점·충돌관점","논제 선택 이유","찬성 근거","반대 근거","입장과 이유","2차시 상태","추가자료 수","3차시 상태","최종 입론서","화면이탈","붙여넣기"];
-  const rows=assessmentAttempts.map(at=>{const st=rosterMap.get(String(at.studentId))||{},p=at.phase2||{},events=Array.isArray(at.phase3EventLog)?at.phase3EventLog:[],focus=events.filter(e=>e?.type==="FOCUS_LOSS").length||Number(at.phase3FocusLossCount||0),paste=events.filter(e=>e?.type==="PASTE").length||Number(at.phase3PasteCount||0);return [at.studentId,st.name||at.studentName||"",st.className||at.className||"",p.topicTitle||"",p.propositionText||"",p.selectionReason||"",p.passageConnection||"",p.conflictAnalysis||"",p.propositionChoiceReason||"",p.proGround||"",p.conGround||"",p.stanceReason||"",at.phase2Status||"",Array.isArray(at.extraMaterials)?at.extraMaterials.length:0,at.phase3Status||"",at.phase3Essay||"",focus,paste];});
+  const headers=["학번","이름","반","선택 지문","선택 논제","지문 선택 이유","원지문 연결","쟁점·충돌관점","논제 선택 이유","찬성 근거","반대 근거","입장과 이유","2차시 상태","추가자료 수","3차시 상태","찬성 주장","찬성 첫째 근거","찬성 첫째 출처","찬성 첫째 객관자료·사례","찬성 둘째 근거","찬성 둘째 출처","찬성 둘째 객관자료·사례","찬성 예상 반론·교차조사","찬성 반박","찬성 내용 요약·정리","반대 주장","반대 첫째 근거","반대 첫째 출처","반대 첫째 객관자료·사례","반대 둘째 근거","반대 둘째 출처","반대 둘째 객관자료·사례","반대 예상 반론·교차조사","반대 반박","반대 내용 요약·정리","최종 입론서(호환 텍스트)","화면이탈","붙여넣기"];
+  const rows=assessmentAttempts.map(at=>{const st=rosterMap.get(String(at.studentId))||{},p=at.phase2||{},o=at.phase3Outline||{},events=Array.isArray(at.phase3EventLog)?at.phase3EventLog:[],focus=events.filter(e=>e?.type==="FOCUS_LOSS").length||Number(at.phase3FocusLossCount||0),paste=events.filter(e=>e?.type==="PASTE").length||Number(at.phase3PasteCount||0);return [at.studentId,st.name||at.studentName||"",st.className||at.className||"",p.topicTitle||"",p.propositionText||"",p.selectionReason||"",p.passageConnection||"",p.conflictAnalysis||"",p.propositionChoiceReason||"",p.proGround||"",p.conGround||"",p.stanceReason||"",at.phase2Status||"",Array.isArray(at.extraMaterials)?at.extraMaterials.length:0,at.phase3Status||"",o.proClaim||"",o.proGround1||"",o.proSource1||"",o.proEvidence1||"",o.proGround2||"",o.proSource2||"",o.proEvidence2||"",o.proCounter||"",o.proRebuttal||"",o.proSummary||"",o.conClaim||"",o.conGround1||"",o.conSource1||"",o.conEvidence1||"",o.conGround2||"",o.conSource2||"",o.conEvidence2||"",o.conCounter||"",o.conRebuttal||"",o.conSummary||"",at.phase3Essay||"",focus,paste];});
   const csv="\ufeff"+[headers,...rows].map(r=>r.map(quote).join(",")).join("\r\n"),blob=new Blob([csv],{type:"text/csv;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`${a.title||"수행평가2"}_2단계응답.csv`;link.click();URL.revokeObjectURL(url);
 }
 
