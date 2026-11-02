@@ -1,0 +1,48 @@
+JCOUP 수행평가2 정식 통합 개선본 검증 결과
+관리자 v3.5.2 / 학생 v1.8.2 / Drive Bridge v1.0.1
+
+[PASS] 관리자 js/app.js node --check
+[PASS] 관리자 js/db.js node --check
+[PASS] 관리자 js/project-data.js node --check
+[PASS] 학생 js/app.js node --check
+[PASS] 학생 js/portal-config.js node --check
+[PASS] 관리자/학생 index.html 중복 ID 없음
+[PASS] 관리자/학생 index.html 로컬 참조 파일 누락 없음
+[PASS] Firebase Storage SDK 호출 없음
+[PASS] 학생 추가자료 업로드: GAS 완료 메시지 + Firestore 실제 등록 상태 병행 확인
+[PASS] GAS 메시지 유실 시 Firestore 등록 상태 재확인 후 성공 처리
+[PASS] 추가자료 삭제도 Firestore 실제 상태 재확인 로직 유지
+[PASS] 2차시 교사 제공 Drive PDF iframe에 popup 권한 허용
+[PASS] 2차시 포털 자체 [새 탭에서 보기] 버튼 제공
+[PASS] 3차시 교사 제공 PDF 새 탭/외부 이동 제한 유지
+[PASS] 3차시 찬성·반대 양쪽 모두 구조화 입력
+[PASS] '이유' 대신 '근거' 사용
+[PASS] 별도 '추가 교차조사 질문' 항목 없음
+[PASS] 찬성/반대 마지막 항목 = '내용 요약·정리'
+[PASS] 찬성 10개 + 반대 10개 = 총 20개 세부 입력값 phase3Outline 저장
+[PASS] 20개 세부 입력값 모두 작성해야 최종 제출 가능
+[PASS] 3차시 localStorage 즉시 저장 + Firestore 약 5분 저빈도 백업 유지
+[PASS] 기존 화면이탈/복사/붙여넣기 감독 기록 유지
+[PASS] phase3Outline과 함께 기존 호환용 phase3Essay 자동 생성/저장
+[PASS] 관리자 CSV에 찬성/반대 구조화 항목을 별도 열로 출력
+[PASS] Firestore Rules에 phase3Outline 업데이트 허용
+[PASS] Firestore Rules 중괄호 균형 확인
+[PASS] 기존 수행평가1 시험형 코드 제거 없음
+
+[NOT RUN]
+- 실제 doktogul-progress에 새 Rules 게시 후 실서비스 권한 테스트
+- 실제 선생님 GAS v1.0.1 웹앱과 브라우저를 통한 업로드/삭제/보기 통합 테스트
+- 실제 Google Drive 교사자료의 새 탭 열기 학교 계정/브라우저별 테스트
+- 90명 동시접속 부하 테스트
+
+권장 스모크 테스트
+1) 테스트 학생 2차시 입장
+2) 교사 제공 PDF 열기 → [새 탭에서 보기] 확인
+3) 2차시 제출 → 자료등록 단계 전환
+4) PDF 업로드 → 화면 성공표시 + Drive 폴더 + 관리자 목록 동시 확인
+5) PDF 교체/삭제 확인
+6) PDF 1개 등록 후 3차시 시작 → 추가자료 잠금 확인
+7) 3차시 교사자료에서 새 탭 제한 확인
+8) 찬성/반대 20개 세부 입력칸 작성 → 자동저장 확인
+9) 새로고침 후 입력 복구 확인
+10) 최종 제출 → 관리자 CSV 구조화 열 확인

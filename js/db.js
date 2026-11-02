@@ -1,5 +1,5 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.5.2";
-import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.2";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=3.5.3";
+import { DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.3";
 
 const PROJECTS_LOCAL_KEY = "jcoop_course_projects_v2";
 const ACTIVE_PROJECT_KEY = "jcoop_active_project_v2";
@@ -958,6 +958,23 @@ function normalizeAssessment(assessment){
       updatedAt:prev.updatedAt||null
     };
   });
+  const incomingMakeup=(assessment.makeupAccess&&typeof assessment.makeupAccess==="object")?assessment.makeupAccess:{};
+  const makeupAccess={};
+  const makeupWindows={};
+  targetClasses.forEach(cls=>{
+    const raw=(incomingMakeup?.[cls]&&typeof incomingMakeup[cls]==="object")?incomingMakeup[cls]:{};
+    const clean={};
+    Object.entries(raw).forEach(([studentId,entry])=>{
+      const e=(entry&&typeof entry==="object")?entry:{};
+      const phase2=e.phase2===true,phase3=e.phase3===true;
+      if(phase2||phase3||e.phase2OpenedAt||e.phase2ClosedAt||e.phase3OpenedAt||e.phase3ClosedAt){
+        clean[String(studentId)]={phase2,phase3,phase2OpenedAt:e.phase2OpenedAt||null,phase2ClosedAt:e.phase2ClosedAt||null,phase3OpenedAt:e.phase3OpenedAt||null,phase3ClosedAt:e.phase3ClosedAt||null};
+      }
+    });
+    makeupAccess[cls]=clean;
+    const vals=Object.values(clean);
+    makeupWindows[cls]={phase2Open:vals.some(x=>x.phase2===true),phase3Open:vals.some(x=>x.phase3===true),updatedAt:assessment.makeupWindows?.[cls]?.updatedAt||null};
+  });
   const allowedStatus=mode==="ARGUMENT_TWO_STAGE"?["DRAFT","ACTIVE","CLOSED"]:["DRAFT","WAITING","OPEN","CLOSED"];
   return {
     id:String(assessment.id||crypto.randomUUID()),
@@ -973,6 +990,8 @@ function normalizeAssessment(assessment){
     extraMaterialMaxFiles:Math.max(0,Math.min(5,Number(assessment.extraMaterialMaxFiles??3))),
     extraMaterialMaxBytes:Math.max(1024*1024,Math.min(15*1024*1024,Number(assessment.extraMaterialMaxBytes||5*1024*1024))),
     classStages,
+    makeupAccess,
+    makeupWindows,
     topicSets,
     timeExtensionMinutes:Math.max(0,Number(assessment.timeExtensionMinutes||0)),
     startedAt:assessment.startedAt||null,
@@ -1022,6 +1041,7 @@ async function publishAssessmentPublic(assessment){
     extraMaterialMaxFiles:a.extraMaterialMaxFiles,
     extraMaterialMaxBytes:a.extraMaterialMaxBytes,
     classStages:a.classStages,
+    makeupWindows:a.makeupWindows,
     timeExtensionMinutes:a.timeExtensionMinutes||0,
     startedAt:a.startedAt||null,
     questionCount:a.mode==="ARGUMENT_TWO_STAGE"?0:a.questions.length,
@@ -1144,6 +1164,38 @@ export async function setTwoStageClassStage(assessmentId,className,nextStage,ass
   return {...a,classStages,status,updatedAt:now.toISOString()};
 }
 
+
+export async function setTwoStageMakeupAccess(assessmentId,className,studentIds,phase,enabled,assessmentSnapshot=null){
+  requireAssessmentCloud();
+  const id=String(assessmentId),cls=String(className||"").trim(),targetPhase=String(phase||"").toUpperCase();
+  const ids=[...new Set((studentIds||[]).map(String).filter(Boolean))];
+  if(!ids.length)throw new Error("보충 응시 대상 학생을 선택해 주세요.");
+  if(!["PHASE2","PHASE3"].includes(targetPhase))throw new Error("지원하지 않는 보충 응시 단계입니다.");
+  if(!assessmentSnapshot||String(assessmentSnapshot.id||"")!==id)throw new Error("현재 평가 정보가 없습니다.");
+  const a=normalizeAssessment(assessmentSnapshot);
+  if(a.mode!=="ARGUMENT_TWO_STAGE")throw new Error("2단계형 수행평가가 아닙니다.");
+  if(!a.targetClasses.includes(cls))throw new Error("평가 대상 반이 아닙니다.");
+  const nowIso=new Date().toISOString(),makeupAccess={...(a.makeupAccess||{})};
+  const classMap={...(makeupAccess[cls]||{})};
+  ids.forEach(studentId=>{
+    const prev={...(classMap[studentId]||{})};
+    if(targetPhase==="PHASE2"){prev.phase2=!!enabled;if(enabled)prev.phase2OpenedAt=nowIso;else prev.phase2ClosedAt=nowIso;}
+    else{prev.phase3=!!enabled;if(enabled)prev.phase3OpenedAt=nowIso;else prev.phase3ClosedAt=nowIso;}
+    if(prev.phase2!==true&&prev.phase3!==true&&!prev.phase2OpenedAt&&!prev.phase2ClosedAt&&!prev.phase3OpenedAt&&!prev.phase3ClosedAt)delete classMap[studentId];
+    else classMap[studentId]=prev;
+  });
+  makeupAccess[cls]=classMap;
+  const makeupWindows={...(a.makeupWindows||{})};
+  const vals=Object.values(classMap);
+  makeupWindows[cls]={phase2Open:vals.some(x=>x?.phase2===true),phase3Open:vals.some(x=>x?.phase3===true),updatedAt:nowIso};
+  const privateRef=firebase.fsMod.doc(db,"users",currentUser.uid,"courseProjects",activeProjectId,"assessments",id);
+  const publicRef=firebase.fsMod.doc(db,"publicCourses",activeProjectId,"assessments",id);
+  const batch=firebase.fsMod.writeBatch(db);
+  batch.set(privateRef,{makeupAccess,makeupWindows,updatedAt:nowIso},{merge:true});
+  batch.set(publicRef,{makeupWindows,updatedAt:firebase.fsMod.serverTimestamp()},{merge:true});
+  await commitAssessmentBatch_(batch,`${cls}반 보충 응시 권한 변경`);
+  return {...a,makeupAccess,makeupWindows,updatedAt:nowIso};
+}
 
 export async function setAssessmentStatus(assessmentId,status,assessmentSnapshot=null){
   requireAssessmentCloud();

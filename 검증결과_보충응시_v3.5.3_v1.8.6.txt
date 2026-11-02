@@ -1,0 +1,33 @@
+검증 결과
+
+1. JavaScript 구문 검사
+- 관리자 js/app.js: PASS
+- 관리자 js/db.js: PASS
+- 관리자 js/project-data.js: PASS
+- 학생 js/app.js: PASS
+- 학생 js/portal-config.js: PASS
+
+2. 버전 확인
+- 관리자 APP_VERSION: 3.5.3
+- 학생 PORTAL_CONFIG.version: 1.8.6
+- 학생 build id: 1.8.6-makeup-r1
+
+3. 보충 응시 로직 정적 검증
+- 기존 평가ID 유지: PASS
+- 학생별 2차시 권한: PASS
+- 학생별 3차시 권한: PASS
+- 보충 대상이 아닌 학생의 session 생성 차단 규칙: 반영
+- 2차시 제출 완료 답안 수정 차단: 기존 규칙 유지
+- 3차시 보충 시 2차시 제출 완료 조건: 반영
+- 미접속 2차시 학생의 attempt 신규 생성: 반영
+- 기존 작성중 2차시 attempt 이어쓰기: 반영
+- 공개 평가 문서에 학생별 보충 명단 비노출: 반영
+
+4. Firestore Rules 정적 확인
+- 중괄호 수 일치
+- 괄호 수 일치
+- 대괄호 수 일치
+- Firebase 실제 배포/에뮬레이터 통합시험은 이 환경에서 수행하지 못함
+
+5. Drive Bridge
+- 변경 없음. v1.0.1 계속 사용

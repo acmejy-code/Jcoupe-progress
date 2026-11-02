@@ -1,5 +1,5 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.2";
-import { DRIVE_BRIDGE_CONFIG, isDriveBridgeConfigured } from "./drive-bridge-config.js?v=3.5.2";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.3";
+import { DRIVE_BRIDGE_CONFIG, isDriveBridgeConfigured } from "./drive-bridge-config.js?v=3.5.3";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -11,8 +11,8 @@ import {
   watchAssessmentAttempts, resetAssessmentRun, setAssessmentDuration, extendAssessmentTime, extendAssessmentStudentTime,
   reopenAssessmentAttempt,
   closeAssessmentStatusOnly, closeAssessmentImmediate, setAssessmentStatusVerified, getAssessmentRecoverySnapshots,
-  setTwoStageClassStage
-} from "./db.js?v=3.5.2";
+  setTwoStageClassStage, setTwoStageMakeupAccess
+} from "./db.js?v=3.5.3";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -984,6 +984,14 @@ function twoStageClassCounts(a,cls){
   const rows=assessmentAttempts.filter(at=>ids.has(String(at.studentId||at.id)));
   return {total:roster.length,phase2Submitted:rows.filter(x=>x.phase2Status==="SUBMITTED").length,materialUsers:rows.filter(x=>Array.isArray(x.extraMaterials)&&x.extraMaterials.length).length,materialFiles:rows.reduce((n,x)=>n+(Array.isArray(x.extraMaterials)?x.extraMaterials.length:0),0),phase3Submitted:rows.filter(x=>x.phase3Status==="SUBMITTED").length};
 }
+function twoStageMakeupEntry(a,cls,studentId){return a?.makeupAccess?.[cls]?.[String(studentId)]||{};}
+function twoStageMakeupWindow(a,cls){return a?.makeupWindows?.[cls]||{phase2Open:false,phase3Open:false};}
+function twoStageMakeupStatusHtml(a,cls,studentId){
+  const m=twoStageMakeupEntry(a,cls,studentId),bits=[];
+  if(m.phase2===true)bits.push('<span class="makeup-pill phase2">2차시</span>');
+  if(m.phase3===true)bits.push('<span class="makeup-pill phase3">3차시</span>');
+  return bits.length?bits.join(' '):'<span class="small muted">-</span>';
+}
 function addQuestionEditor(q={}){
   const wrap=document.createElement("div");wrap.className="question-edit-row";
   wrap.innerHTML=`<div class="question-edit-head"><strong>문항</strong><button type="button" class="icon-btn question-remove">✕</button></div><textarea class="question-prompt" placeholder="문항 내용을 입력하세요.">${esc(q.prompt||"")}</textarea><input class="question-placeholder" placeholder="답안 입력칸 안내(선택)" value="${esc(q.placeholder||"")}"/>`;
@@ -1602,12 +1610,41 @@ function renderTwoStageAssessments(root,selected){
   $("deleteAssessmentDirectBtn").onclick=async()=>{if(!confirm(`「${selected.title}」 평가를 완전히 삭제할까요?\n학생이 Google Drive에 올린 PDF 원본은 Drive에 남습니다. 평가 삭제 후 필요하면 Drive 폴더도 별도로 정리해 주세요.`))return;try{await deleteAssessment(selected.id);removeAssessmentLocal(selected.id);assessmentAttempts=[];renderAssessments();startAttemptWatch();toast("평가를 삭제했습니다.");}catch(err){alert(err.message);}};
   renderTwoStageMonitor();
 }
+async function applyTwoStageMakeup(a,cls,phase,enabled,button){
+  const root=$("assessmentMonitor"),ids=[...root.querySelectorAll("[data-makeup-select]:checked")].map(x=>String(x.value));
+  if(!ids.length){alert("보충 응시 대상 학생을 먼저 선택해 주세요.");return;}
+  const phaseLabel=phase==="PHASE2"?"2차시":"3차시",verb=enabled?"열기":"닫기";
+  if(!confirm(`${cls}반 선택 학생 ${ids.length}명에게 ${phaseLabel} 보충 응시를 ${verb}할까요?\n\n기존 평가ID와 기존 작성 기록은 그대로 유지됩니다.`))return;
+  if(button){button.disabled=true;button.textContent="반영 중…";}
+  try{
+    const updated=await setTwoStageMakeupAccess(a.id,cls,ids,phase,enabled,a);
+    patchAssessmentLocal(a.id,{makeupAccess:updated.makeupAccess,makeupWindows:updated.makeupWindows});
+    renderTwoStageMonitor();toast(`${cls}반 ${phaseLabel} 보충 응시 ${enabled?"허용":"종료"} · ${ids.length}명`);
+  }catch(err){alert(`보충 응시 변경 실패: ${err.message||err}`);}
+  finally{if(button?.isConnected)button.disabled=false;}
+}
+function selectTwoStageMakeupCandidates(kind){
+  const root=$("assessmentMonitor");if(!root)return;
+  root.querySelectorAll("[data-makeup-select]").forEach(cb=>{const p2=cb.dataset.phase2Status,p3=cb.dataset.phase3Status;cb.checked=kind==="PHASE2"?p2!=="SUBMITTED":p2==="SUBMITTED"&&p3!=="SUBMITTED";});
+  const count=root.querySelectorAll("[data-makeup-select]:checked").length,el=$("makeupSelectedCount");if(el)el.textContent=`선택 ${count}명`;
+}
 function renderTwoStageMonitor(){
   const root=$("assessmentMonitor");if(!root)return;const a=assessments.find(x=>x.id===selectedAssessmentId);if(!a||a.mode!==TWO_STAGE_MODE)return;
-  const cls=selectedMonitorClass||a.targetClasses?.[0]||"",roster=classStudents(cls),map=new Map(assessmentAttempts.map(x=>[String(x.studentId||x.id),x]));
-  const rows=roster.map(st=>{const at=map.get(String(st.studentId)),p2=at?.phase2Status==="SUBMITTED"?"제출":at?.phase2Status==="IN_PROGRESS"?"작성중":"미접속",files=Array.isArray(at?.extraMaterials)?at.extraMaterials:[],p3=at?.phase3Status==="SUBMITTED"?"제출":at?.phase3Status==="IN_PROGRESS"?"작성중":"-",eventLog=Array.isArray(at?.phase3EventLog)?at.phase3EventLog:[],focus=eventLog.filter(e=>e?.type==="FOCUS_LOSS").length||Number(at?.phase3FocusLossCount||0),paste=eventLog.filter(e=>e?.type==="PASTE").length||Number(at?.phase3PasteCount||0),events=[focus?`이탈 ${focus}`:"",paste?`붙여넣기 ${paste}`:""].filter(Boolean).join(" · ");return `<tr><td>${esc(st.studentId)}</td><td>${esc(st.name)}</td><td><span class="progress-pill ${p2==="제출"?"done":p2==="작성중"?"doing":""}">${p2}</span></td><td>${files.length?files.map((f,i)=>`<button class="link-button" data-extra-material-id="${esc(f.id||"")}" data-extra-student-id="${esc(st.studentId)}" data-extra-name="${esc(f.name||`자료${i+1}.pdf`)}">${esc(f.name||`자료${i+1}.pdf`)}</button>`).join("<br>"):"-"}</td><td><span class="progress-pill ${p3==="제출"?"done":p3==="작성중"?"doing":""}">${p3}</span></td><td>${esc(events||"-")}</td></tr>`;}).join("");
-  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 단계별 진행 현황</h3><div class="small muted">2단계형은 60초 heartbeat를 사용하지 않습니다. 학생 입력은 기기에 즉시 저장하고 서버에는 저빈도로 백업하여 Firestore 사용량을 줄입니다.</div></div></div><div class="two-stage-monitor-table-wrap"><table class="two-stage-monitor-table"><thead><tr><th>학번</th><th>이름</th><th>2차시</th><th>추가자료</th><th>3차시</th><th>3차시 감독기록</th></tr></thead><tbody>${rows||`<tr><td colspan="6">등록된 학생이 없습니다.</td></tr>`}</tbody></table></div>`;
+  const cls=selectedMonitorClass||a.targetClasses?.[0]||"",roster=classStudents(cls),map=new Map(assessmentAttempts.map(x=>[String(x.studentId||x.id),x])),mw=twoStageMakeupWindow(a,cls);
+  const rows=roster.map(st=>{
+    const at=map.get(String(st.studentId)),p2=at?.phase2Status==="SUBMITTED"?"제출":at?.phase2Status==="IN_PROGRESS"?"작성중":"미접속",files=Array.isArray(at?.extraMaterials)?at.extraMaterials:[],p3=at?.phase3Status==="SUBMITTED"?"제출":at?.phase3Status==="IN_PROGRESS"?"작성중":"-",eventLog=Array.isArray(at?.phase3EventLog)?at.phase3EventLog:[],focus=eventLog.filter(e=>e?.type==="FOCUS_LOSS").length||Number(at?.phase3FocusLossCount||0),paste=eventLog.filter(e=>e?.type==="PASTE").length||Number(at?.phase3PasteCount||0),events=[focus?`이탈 ${focus}`:"",paste?`붙여넣기 ${paste}`:""] .filter(Boolean).join(" · ");
+    return `<tr><td class="makeup-check"><input type="checkbox" data-makeup-select value="${esc(st.studentId)}" data-phase2-status="${esc(at?.phase2Status||"")}" data-phase3-status="${esc(at?.phase3Status||"")}"></td><td>${esc(st.studentId)}</td><td>${esc(st.name)}</td><td><span class="progress-pill ${p2==="제출"?"done":p2==="작성중"?"doing":""}">${p2}</span></td><td>${files.length?files.map((f,i)=>`<button class="link-button" data-extra-material-id="${esc(f.id||"")}" data-extra-student-id="${esc(st.studentId)}" data-extra-name="${esc(f.name||`자료${i+1}.pdf`)}">${esc(f.name||`자료${i+1}.pdf`)}</button>`).join("<br>"):"-"}</td><td><span class="progress-pill ${p3==="제출"?"done":p3==="작성중"?"doing":""}">${p3}</span></td><td>${twoStageMakeupStatusHtml(a,cls,st.studentId)}</td><td>${esc(events||"-")}</td></tr>`;
+  }).join("");
+  root.innerHTML=`<div class="monitor-head"><div><h3>${esc(cls)}반 단계별 진행 현황</h3><div class="small muted">보충 응시는 기존 평가ID를 그대로 사용합니다. 대상 학생만 예외 입장이 허용되므로 기존 답안·논제 선택 기록이 유지됩니다.</div></div></div>
+  <div class="makeup-admin-panel"><div class="makeup-admin-title"><div><b>보충 응시 관리</b><span>현재 공개창: 2차시 ${mw.phase2Open?"열림":"닫힘"} · 3차시 ${mw.phase3Open?"열림":"닫힘"}</span></div><strong id="makeupSelectedCount">선택 0명</strong></div><div class="makeup-admin-actions"><button class="btn small-btn" id="selectMissingP2Btn">2차시 미제출 선택</button><button class="btn small-btn" id="selectMissingP3Btn">3차시 미제출 선택</button><span class="makeup-sep"></span><button class="btn small-btn success-btn" data-makeup-action="PHASE2:1">2차시 보충 열기</button><button class="btn small-btn" data-makeup-action="PHASE2:0">2차시 보충 닫기</button><button class="btn small-btn success-btn" data-makeup-action="PHASE3:1">3차시 보충 열기</button><button class="btn small-btn" data-makeup-action="PHASE3:0">3차시 보충 닫기</button></div><div class="small muted">※ 2차시 보충 학생은 기존 2차시 답안이 있으면 이어서 작성하고, 미접속 학생은 같은 평가 안에서 새 2차시 기록을 시작합니다. 3차시 보충은 2차시 제출 완료 학생만 입장할 수 있습니다.</div></div>
+  <div class="two-stage-monitor-table-wrap"><table class="two-stage-monitor-table"><thead><tr><th><input type="checkbox" id="makeupSelectAll" title="전체 선택"></th><th>학번</th><th>이름</th><th>2차시</th><th>추가자료</th><th>3차시</th><th>보충 권한</th><th>3차시 감독기록</th></tr></thead><tbody>${rows||`<tr><td colspan="8">등록된 학생이 없습니다.</td></tr>`}</tbody></table></div>`;
   root.querySelectorAll("[data-extra-material-id]").forEach(b=>b.onclick=()=>previewAssessmentDriveFile(b.dataset.extraStudentId,b.dataset.extraMaterialId,b.dataset.extraName));
+  const updateCount=()=>{const el=$("makeupSelectedCount");if(el)el.textContent=`선택 ${root.querySelectorAll("[data-makeup-select]:checked").length}명`;};
+  root.querySelectorAll("[data-makeup-select]").forEach(cb=>cb.onchange=updateCount);
+  if($("makeupSelectAll"))$("makeupSelectAll").onchange=e=>{root.querySelectorAll("[data-makeup-select]").forEach(cb=>cb.checked=e.target.checked);updateCount();};
+  if($("selectMissingP2Btn"))$("selectMissingP2Btn").onclick=()=>selectTwoStageMakeupCandidates("PHASE2");
+  if($("selectMissingP3Btn"))$("selectMissingP3Btn").onclick=()=>selectTwoStageMakeupCandidates("PHASE3");
+  root.querySelectorAll("[data-makeup-action]").forEach(btn=>btn.onclick=()=>{const [phase,on]=btn.dataset.makeupAction.split(":");applyTwoStageMakeup(a,cls,phase,on==="1",btn);});
 }
 function appendAdminDriveField_(form,name,value){const i=document.createElement("input");i.type="hidden";i.name=name;i.value=String(value??"");form.appendChild(i);}
 async function previewAssessmentDriveFile(studentId,materialId,name){

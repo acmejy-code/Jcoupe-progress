@@ -16,6 +16,12 @@ service cloud.firestore {
     function twoStageSessionMatchesStage(courseId, assessmentId) { return sessionData(courseId, assessmentId).purpose == twoStageStage(courseId, assessmentId); }
     function twoStageRequestedClass(courseId, assessmentId) { return request.resource.data.className; }
     function requestedTwoStage(courseId, assessmentId) { return privateAssessment(courseId, assessmentId).classStages[twoStageRequestedClass(courseId, assessmentId)].stage; }
+    function makeupClassMap(courseId, assessmentId, className) { return privateAssessment(courseId, assessmentId).get('makeupAccess', {}).get(className, {}); }
+    function makeupEntry(courseId, assessmentId, className, studentId) { return makeupClassMap(courseId, assessmentId, className).get(studentId, {}); }
+    function phase2MakeupAllowed(courseId, assessmentId, className, studentId) { return makeupEntry(courseId, assessmentId, className, studentId).get('phase2', false) == true; }
+    function phase3MakeupAllowed(courseId, assessmentId, className, studentId) { return makeupEntry(courseId, assessmentId, className, studentId).get('phase3', false) == true; }
+    function phase2MakeupSession(courseId, assessmentId) { return sessionData(courseId, assessmentId).purpose == 'PHASE2_MAKEUP' && phase2MakeupAllowed(courseId, assessmentId, sessionData(courseId, assessmentId).className, sessionData(courseId, assessmentId).studentId); }
+    function phase3MakeupSession(courseId, assessmentId) { return sessionData(courseId, assessmentId).purpose == 'PHASE3_MAKEUP' && phase3MakeupAllowed(courseId, assessmentId, sessionData(courseId, assessmentId).className, sessionData(courseId, assessmentId).studentId); }
 
     match /users/{userId}/{document=**} {
       allow read, write: if signedIn() && request.auth.uid == userId;
@@ -49,8 +55,11 @@ service cloud.firestore {
                       || (hasValidSession(courseId, assessmentId)
                           && (
                             (isTwoStage(courseId, assessmentId)
-                             && twoStageSessionMatchesStage(courseId, assessmentId)
-                             && twoStageStage(courseId, assessmentId) in ['PHASE2_OPEN','MATERIAL_WINDOW','PHASE3_OPEN'])
+                             && ((twoStageSessionMatchesStage(courseId, assessmentId)
+                                  && twoStageStage(courseId, assessmentId) in ['PHASE2_OPEN','MATERIAL_WINDOW','PHASE3_OPEN'])
+                                 || phase2MakeupSession(courseId, assessmentId)
+                                 || (phase3MakeupSession(courseId, assessmentId)
+                                     && attemptData(courseId, assessmentId, sessionData(courseId, assessmentId).studentId).phase2Status == 'SUBMITTED')))
                             ||
                             (!isTwoStage(courseId, assessmentId)
                              && privateAssessment(courseId, assessmentId).status == 'OPEN'
@@ -80,15 +89,23 @@ service cloud.firestore {
                            && request.resource.data.className is string
                            && request.resource.data.className == privateStudent(courseId, request.resource.data.studentId).className
                            && request.resource.data.nameKey == privateStudent(courseId, request.resource.data.studentId).nameKey
-                           && request.resource.data.purpose == requestedTwoStage(courseId, assessmentId)
                            && privateAssessment(courseId, assessmentId).targetClasses.hasAny([request.resource.data.className])
                            && (
-                             (requestedTwoStage(courseId, assessmentId) in ['PHASE2_OPEN','PHASE3_OPEN']
+                             (request.resource.data.purpose == requestedTwoStage(courseId, assessmentId)
+                              && ((requestedTwoStage(courseId, assessmentId) in ['PHASE2_OPEN','PHASE3_OPEN']
+                                   && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode)
+                                  || (requestedTwoStage(courseId, assessmentId) == 'MATERIAL_WINDOW'
+                                      && request.resource.data.phase2Submitted == true
+                                      && attemptData(courseId, assessmentId, request.resource.data.studentId).phase2Status == 'SUBMITTED')))
+                             ||
+                             (request.resource.data.purpose == 'PHASE2_MAKEUP'
+                              && phase2MakeupAllowed(courseId, assessmentId, request.resource.data.className, request.resource.data.studentId)
                               && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode)
                              ||
-                             (requestedTwoStage(courseId, assessmentId) == 'MATERIAL_WINDOW'
-                              && request.resource.data.phase2Submitted == true
-                              && attemptData(courseId, assessmentId, request.resource.data.studentId).phase2Status == 'SUBMITTED')
+                             (request.resource.data.purpose == 'PHASE3_MAKEUP'
+                              && phase3MakeupAllowed(courseId, assessmentId, request.resource.data.className, request.resource.data.studentId)
+                              && attemptData(courseId, assessmentId, request.resource.data.studentId).phase2Status == 'SUBMITTED'
+                              && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode)
                            ))
                         );
 
@@ -106,14 +123,22 @@ service cloud.firestore {
                               (isTwoStage(courseId, assessmentId)
                                && request.resource.data.className == resource.data.className
                                && privateAssessment(courseId, assessmentId).targetClasses.hasAny([resource.data.className])
-                               && request.resource.data.purpose == privateAssessment(courseId, assessmentId).classStages[resource.data.className].stage
                                && (
-                                 (privateAssessment(courseId, assessmentId).classStages[resource.data.className].stage in ['PHASE2_OPEN','PHASE3_OPEN']
+                                 (request.resource.data.purpose == privateAssessment(courseId, assessmentId).classStages[resource.data.className].stage
+                                  && ((privateAssessment(courseId, assessmentId).classStages[resource.data.className].stage in ['PHASE2_OPEN','PHASE3_OPEN']
+                                       && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode)
+                                      || (privateAssessment(courseId, assessmentId).classStages[resource.data.className].stage == 'MATERIAL_WINDOW'
+                                          && request.resource.data.phase2Submitted == true
+                                          && attemptData(courseId, assessmentId, resource.data.studentId).phase2Status == 'SUBMITTED')))
+                                 ||
+                                 (request.resource.data.purpose == 'PHASE2_MAKEUP'
+                                  && phase2MakeupAllowed(courseId, assessmentId, resource.data.className, resource.data.studentId)
                                   && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode)
                                  ||
-                                 (privateAssessment(courseId, assessmentId).classStages[resource.data.className].stage == 'MATERIAL_WINDOW'
-                                  && request.resource.data.phase2Submitted == true
-                                  && attemptData(courseId, assessmentId, resource.data.studentId).phase2Status == 'SUBMITTED')
+                                 (request.resource.data.purpose == 'PHASE3_MAKEUP'
+                                  && phase3MakeupAllowed(courseId, assessmentId, resource.data.className, resource.data.studentId)
+                                  && attemptData(courseId, assessmentId, resource.data.studentId).phase2Status == 'SUBMITTED'
+                                  && request.resource.data.accessCodeProof == privateAssessment(courseId, assessmentId).accessCode)
                                ))
                             ));
           allow delete: if isCourseOwner(courseId) || (signedIn() && sessionId == request.auth.uid);
@@ -125,7 +150,7 @@ service cloud.firestore {
                           && sessionData(courseId, assessmentId).studentId == studentId
                           && (
                             (isTwoStage(courseId, assessmentId)
-                             && twoStageSessionMatchesStage(courseId, assessmentId))
+                             && (twoStageSessionMatchesStage(courseId, assessmentId) || phase2MakeupSession(courseId, assessmentId) || phase3MakeupSession(courseId, assessmentId)))
                             || privateAssessment(courseId, assessmentId).status == 'WAITING'
                             || resource.data.authUid == request.auth.uid
                           ));
@@ -141,10 +166,11 @@ service cloud.firestore {
                                    || (privateAssessment(courseId, assessmentId).status == 'OPEN' && request.resource.data.status == 'IN_PROGRESS')))
                               ||
                               (isTwoStage(courseId, assessmentId)
-                               && twoStageSessionMatchesStage(courseId, assessmentId)
-                               && twoStageStage(courseId, assessmentId) == 'PHASE2_OPEN'
                                && request.resource.data.className == twoStageSessionClass(courseId, assessmentId)
-                               && request.resource.data.phase2Status == 'IN_PROGRESS')
+                               && request.resource.data.phase2Status == 'IN_PROGRESS'
+                               && ((twoStageSessionMatchesStage(courseId, assessmentId)
+                                    && twoStageStage(courseId, assessmentId) == 'PHASE2_OPEN')
+                                   || phase2MakeupSession(courseId, assessmentId)))
                             ));
 
           allow update: if isCourseOwner(courseId)
@@ -183,6 +209,16 @@ service cloud.firestore {
                                   && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['extraMaterials','extraMaterialsUpdatedAt','lastSeenAt','updatedAt']))
                                  ||
                                  (twoStageStage(courseId, assessmentId) == 'PHASE3_OPEN'
+                                  && resource.data.phase2Status == 'SUBMITTED'
+                                  && request.resource.data.phase3Status in ['IN_PROGRESS','SUBMITTED']
+                                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phase3Status','phase3Outline','phase3Essay','phase3StartedAt','phase3SubmittedAt','phase3LastSavedAt','phase3EventLog','phase3FocusLossCount','phase3PasteCount','phase3CopyCount','lastSeenAt','updatedAt']))
+                                 ||
+                                 (phase2MakeupSession(courseId, assessmentId)
+                                  && resource.data.phase2Status != 'SUBMITTED'
+                                  && request.resource.data.phase2Status in ['IN_PROGRESS','SUBMITTED']
+                                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phase2','phase2Status','phase2SubmittedAt','phase2LastSavedAt','lastSeenAt','updatedAt']))
+                                 ||
+                                 (phase3MakeupSession(courseId, assessmentId)
                                   && resource.data.phase2Status == 'SUBMITTED'
                                   && request.resource.data.phase3Status in ['IN_PROGRESS','SUBMITTED']
                                   && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phase3Status','phase3Outline','phase3Essay','phase3StartedAt','phase3SubmittedAt','phase3LastSavedAt','phase3EventLog','phase3FocusLossCount','phase3PasteCount','phase3CopyCount','lastSeenAt','updatedAt']))
