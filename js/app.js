@@ -1,5 +1,5 @@
-import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.3";
-import { DRIVE_BRIDGE_CONFIG, isDriveBridgeConfigured } from "./drive-bridge-config.js?v=3.5.3";
+import { APP_VERSION, DEFAULT_PROJECT_ID, SEED_PROJECTS, cloneProject, normalizeProject } from "./project-data.js?v=3.5.4";
+import { DRIVE_BRIDGE_CONFIG, isDriveBridgeConfigured } from "./drive-bridge-config.js?v=3.5.4";
 import {
   initDataLayer, storageMode, getCurrentUser, signInGoogle, signOutGoogle,
   upsertRecord, deleteRecordById, migrateLocalToCloud, replaceAllRecords,
@@ -12,7 +12,7 @@ import {
   reopenAssessmentAttempt,
   closeAssessmentStatusOnly, closeAssessmentImmediate, setAssessmentStatusVerified, getAssessmentRecoverySnapshots,
   setTwoStageClassStage, setTwoStageMakeupAccess
-} from "./db.js?v=3.5.3";
+} from "./db.js?v=3.5.4";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -957,8 +957,34 @@ const DEFAULT_TWO_STAGE_TOPICS=[
   ]}
 ];
 function defaultTwoStageTopics(){return DEFAULT_TWO_STAGE_TOPICS.map(t=>({id:t.id,title:t.title,propositions:t.propositions.map((text,i)=>({id:`p${i+1}`,text})),teacherMaterials:[]}));}
-function teacherMaterialsText(items){return (items||[]).map(m=>`${m.title||"자료"} | ${m.url||""}`).join("\n");}
-function parseTeacherMaterials(text){return String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map((line,i)=>{const pos=line.indexOf("|");return pos>=0?{id:`m${i+1}`,title:line.slice(0,pos).trim()||`자료 ${i+1}`,url:line.slice(pos+1).trim()}:{id:`m${i+1}`,title:`자료 ${i+1}`,url:line};}).filter(x=>x.url);}
+function teacherMaterialSeedRows(items){
+  const rows=(Array.isArray(items)?items:[]).map((m,i)=>({id:String(m?.id||`m${i+1}`),title:String(m?.title||`자료 ${i+1}`).trim(),url:String(m?.url||"").trim()}));
+  if(rows.length)return rows;
+  return [{id:"m1",title:"원지문",url:""},{id:"m2",title:"보조자료",url:""}];
+}
+function teacherMaterialRowHtml(m={},i=0){
+  return `<div class="two-topic-material-row" data-teacher-material-row>
+    <input class="two-topic-material-title" value="${esc(m.title||`자료 ${i+1}`)}" placeholder="자료명">
+    <input class="two-topic-material-url" value="${esc(m.url||"")}" placeholder="Google Drive PDF 링크 붙여넣기">
+    <button type="button" class="btn ghost small-btn two-topic-material-remove" data-remove-teacher-material aria-label="자료 삭제">삭제</button>
+  </div>`;
+}
+function bindTeacherMaterialEditor(root){
+  root.querySelectorAll("[data-add-teacher-material]").forEach(btn=>{btn.onclick=()=>{
+    const box=btn.closest(".two-topic-material-box");if(!box)return;
+    const rows=box.querySelector(".two-topic-material-rows");if(!rows)return;
+    const i=rows.querySelectorAll("[data-teacher-material-row]").length;
+    rows.insertAdjacentHTML("beforeend",teacherMaterialRowHtml({title:`자료 ${i+1}`,url:""},i));
+  };});
+  root.onclick=(e)=>{
+    const btn=e.target.closest?.("[data-remove-teacher-material]");if(!btn)return;
+    const row=btn.closest("[data-teacher-material-row]");const box=btn.closest(".two-topic-material-box");
+    if(!row||!box)return;
+    const rows=box.querySelectorAll("[data-teacher-material-row]");
+    if(rows.length<=1){row.querySelector(".two-topic-material-title").value="원지문";row.querySelector(".two-topic-material-url").value="";return;}
+    row.remove();
+  };
+}
 function isFixedTeacherMaterialUrl(raw){
   const url=String(raw||"").trim();if(!/^https:\/\//i.test(url))return false;
   return /drive\.google\.com\/(?:file\/d\/|open\?id=)/i.test(url)||/\.pdf(?:$|[?#])/i.test(url)||/(?:firebasestorage\.googleapis\.com|storage\.googleapis\.com)/i.test(url);
@@ -966,10 +992,16 @@ function isFixedTeacherMaterialUrl(raw){
 function renderTwoStageTopicEditor(topics){
   const root=$("twoStageTopicEditor");if(!root)return;
   const rows=(topics?.length?topics:defaultTwoStageTopics());
-  root.innerHTML=rows.map((t,i)=>`<section class="two-stage-topic-card" data-two-topic-index="${i}" data-two-topic-id="${esc(t.id||`topic${i+1}`)}"><div class="two-stage-topic-head"><b>${i+1}. 지문·논제 세트</b><span>학생은 이 중 1개 세트를 선택합니다.</span></div><label>지문명<input class="two-topic-title" value="${esc(t.title||"")}"></label>${[0,1,2].map(j=>`<label>논제 ${j+1}<textarea class="two-topic-prop" data-prop-index="${j}" rows="2">${esc(t.propositions?.[j]?.text||t.propositions?.[j]||"")}</textarea></label>`).join("")}<label>교사 제공 자료 <small>한 줄에 ‘자료명 | URL’</small><textarea class="two-topic-materials" rows="3" placeholder="원지문 PDF | https://...\n보조자료 | https://...">${esc(teacherMaterialsText(t.teacherMaterials))}</textarea></label></section>`).join("");
+  root.innerHTML=rows.map((t,i)=>`<section class="two-stage-topic-card" data-two-topic-index="${i}" data-two-topic-id="${esc(t.id||`topic${i+1}`)}"><div class="two-stage-topic-head"><b>${i+1}. 지문·논제 세트</b><span>학생은 이 중 1개 세트를 선택합니다.</span></div><label>지문명<input class="two-topic-title" value="${esc(t.title||"")}"></label>${[0,1,2].map(j=>`<label>논제 ${j+1}<textarea class="two-topic-prop" data-prop-index="${j}" rows="2">${esc(t.propositions?.[j]?.text||t.propositions?.[j]||"")}</textarea></label>`).join("")}<div class="two-topic-material-box"><div class="two-topic-material-head"><b>교사 제공 자료</b><small>URL만 붙여넣으면 됩니다.</small></div><div class="two-topic-material-rows">${teacherMaterialSeedRows(t.teacherMaterials).map((m,j)=>teacherMaterialRowHtml(m,j)).join("")}</div><button type="button" class="btn ghost small-btn two-topic-material-add" data-add-teacher-material>+ 자료 추가</button></div></section>`).join("");
+  bindTeacherMaterialEditor(root);
 }
 function collectTwoStageTopics(){
-  return [...document.querySelectorAll("[data-two-topic-index]")].map((card,i)=>({id:card.dataset.twoTopicId||`topic${i+1}`,title:card.querySelector(".two-topic-title")?.value.trim()||"",propositions:[...card.querySelectorAll(".two-topic-prop")].map((el,j)=>({id:`p${j+1}`,text:el.value.trim()})),teacherMaterials:parseTeacherMaterials(card.querySelector(".two-topic-materials")?.value||"")})).filter(t=>t.title);
+  return [...document.querySelectorAll("[data-two-topic-index]")].map((card,i)=>({
+    id:card.dataset.twoTopicId||`topic${i+1}`,
+    title:card.querySelector(".two-topic-title")?.value.trim()||"",
+    propositions:[...card.querySelectorAll(".two-topic-prop")].map((el,j)=>({id:`p${j+1}`,text:el.value.trim()})),
+    teacherMaterials:[...card.querySelectorAll("[data-teacher-material-row]")].map((row,j)=>({id:`m${j+1}`,title:row.querySelector(".two-topic-material-title")?.value.trim()||`자료 ${j+1}`,url:row.querySelector(".two-topic-material-url")?.value.trim()||""})).filter(m=>m.url)
+  })).filter(t=>t.title);
 }
 function updateAssessmentModeFields(){
   const two=$("assessmentMode")?.value===TWO_STAGE_MODE;

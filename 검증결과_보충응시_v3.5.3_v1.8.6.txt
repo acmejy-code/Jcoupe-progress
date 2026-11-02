@@ -8,7 +8,7 @@
 - 학생 js/portal-config.js: PASS
 
 2. 버전 확인
-- 관리자 APP_VERSION: 3.5.3
+- 관리자 APP_VERSION: 3.5.4
 - 학생 PORTAL_CONFIG.version: 1.8.6
 - 학생 build id: 1.8.6-makeup-r1
 

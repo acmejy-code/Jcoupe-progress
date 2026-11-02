@@ -1,4 +1,4 @@
-# Jcoupe-progress v3.5.3 — 보충 응시 관리
+# Jcoupe-progress v3.5.4 — 보충 응시 관리
 
 기준: v3.5.2 수행평가2 정식통합 전체교체본
 

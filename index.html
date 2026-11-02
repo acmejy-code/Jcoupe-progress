@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="theme-color" content="#1d4ed8"/>
   <title>제이쿱 수업 통합 제어 시스템</title>
-  <link rel="stylesheet" href="./styles.css?v=3.5.3"/>
+  <link rel="stylesheet" href="./styles.css?v=3.5.4"/>
 </head>
 <body>
 <div class="app">
@@ -278,7 +278,7 @@
             <label>추가자료 최대 PDF<input type="number" id="extraMaterialMaxFiles" min="0" max="5" value="3"></label>
           </div>
         </div>
-        <div class="small muted two-stage-help">교사 제공 자료는 각 지문 카드의 ‘자료명 | URL’에 한 줄씩 등록합니다. 3차시 자료 통제를 위해 웹페이지 링크가 아니라 Google Drive의 PDF 파일 링크 또는 직접 PDF 링크만 사용합니다. 학생 추가자료 서식은 학생 포털에 DOCX로 고정 제공됩니다.</div>
+        <div class="small muted two-stage-help">교사 제공 자료는 각 지문 카드에서 자료명 옆에 Google Drive PDF 링크를 그대로 붙여넣으면 됩니다. 기본으로 ‘원지문’과 ‘보조자료’가 표시되며, 필요하면 자료를 추가할 수 있습니다. 3차시 자료 통제를 위해 웹페이지 링크가 아니라 Google Drive의 PDF 파일 링크 또는 직접 PDF 링크만 사용합니다.</div>
         <div id="twoStageTopicEditor" class="two-stage-topic-editor"></div>
       </div>
       <div class="field full" id="legacyAssessmentQuestionField">
@@ -470,6 +470,6 @@
 
 <div class="toast" id="toast"></div>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script type="module" src="./js/app.js?v=3.5.3"></script>
+  <script type="module" src="./js/app.js?v=3.5.4"></script>
 </body>
 </html>
